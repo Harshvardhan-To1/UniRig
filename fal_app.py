@@ -19,7 +19,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 import fal
 from fal.exceptions import FieldException
@@ -28,18 +28,14 @@ from fastapi import Request, Response
 from pydantic import BaseModel, Field
 
 
-# Output format options
 OUTPUT_FORMAT_LITERAL = Literal["fbx", "glb"]
 DEFAULT_OUTPUT_FORMAT: OUTPUT_FORMAT_LITERAL = "fbx"
 DEFAULT_SEED: int = 12345
 DEFAULT_FACES_TARGET_COUNT: int = 50000
-
-# Supported input formats
 SUPPORTED_FORMATS = ["obj", "fbx", "glb", "gltf", "vrm", "dae"]
 
 
 def get_seed(seed: int | None) -> int:
-    """Get seed value, generating random one if not provided."""
     if seed is None:
         import random
         return random.randint(0, 2**32 - 1)
@@ -47,7 +43,6 @@ def get_seed(seed: int | None) -> int:
 
 
 class DictToAttr(dict):
-    """A dict subclass that allows attribute-style access to keys."""
     def __getattr__(self, key):
         try:
             value = self[key]
@@ -69,7 +64,6 @@ class DictToAttr(dict):
 
 
 def dict_to_attr(d):
-    """Recursively convert a dict to DictToAttr for attribute-style access."""
     if isinstance(d, dict):
         return DictToAttr({k: dict_to_attr(v) for k, v in d.items()})
     elif isinstance(d, list):
@@ -83,7 +77,6 @@ def safe_hf_download(
     local_dir: str,
     max_retries: int = 3,
 ) -> str:
-    """Download a file from HuggingFace with retry logic."""
     from huggingface_hub import hf_hub_download
     import time
     
@@ -106,8 +99,6 @@ def safe_hf_download(
 
 
 class UniRigInput(BaseModel):
-    """Input schema for UniRig rigging."""
-    
     mesh_file: str = Field(
         description="URL to the input 3D mesh file (supports .obj, .fbx, .glb, .gltf, .vrm, .dae)",
         examples=[
@@ -132,53 +123,7 @@ class UniRigInput(BaseModel):
     )
 
 
-class SkeletonOnlyInput(BaseModel):
-    """Input schema for skeleton-only prediction."""
-    
-    mesh_file: str = Field(
-        description="URL to the input 3D mesh file (supports .obj, .fbx, .glb, .gltf, .vrm, .dae)",
-    )
-    seed: int | None = Field(
-        default=None,
-        description="Random seed for reproducible skeleton generation.",
-    )
-    output_format: OUTPUT_FORMAT_LITERAL = Field(
-        default=DEFAULT_OUTPUT_FORMAT,
-        description="Output format: 'fbx' or 'glb'.",
-    )
-    faces_target_count: int = Field(
-        default=DEFAULT_FACES_TARGET_COUNT,
-        ge=1000,
-        le=200000,
-        description="Target number of faces for mesh simplification.",
-    )
-
-
-class SkinOnlyInput(BaseModel):
-    """Input schema for skinning prediction (requires mesh with skeleton)."""
-    
-    mesh_file: str = Field(
-        description="URL to the input 3D mesh file with skeleton (typically .fbx from skeleton endpoint)",
-    )
-    original_mesh_file: str | None = Field(
-        default=None,
-        description="URL to the original mesh file to merge textures/materials from.",
-    )
-    output_format: OUTPUT_FORMAT_LITERAL = Field(
-        default=DEFAULT_OUTPUT_FORMAT,
-        description="Output format: 'fbx' or 'glb'.",
-    )
-    faces_target_count: int = Field(
-        default=DEFAULT_FACES_TARGET_COUNT,
-        ge=1000,
-        le=200000,
-        description="Target number of faces for mesh simplification.",
-    )
-
-
 class UniRigOutput(BaseModel):
-    """Output schema for full UniRig rigging."""
-    
     rigged_file: File = Field(
         description="The fully rigged 3D model file with skeleton and skinning weights.",
     )
@@ -189,33 +134,6 @@ class UniRigOutput(BaseModel):
     seed: int = Field(
         description="Seed used for generation.",
     )
-
-
-class SkeletonOutput(BaseModel):
-    """Output schema for skeleton-only prediction."""
-    
-    skeleton_file: File = Field(
-        description="The predicted skeleton file.",
-    )
-    seed: int = Field(
-        description="Seed used for generation.",
-    )
-
-
-class SkinOutput(BaseModel):
-    """Output schema for skinning prediction."""
-    
-    skinned_file: File = Field(
-        description="The skinned 3D model file with weights applied.",
-    )
-
-
-class HealthOutput(BaseModel):
-    """Output schema for health check."""
-    
-    status: str = Field(description="Service status")
-    version: str = Field(description="UniRig version info")
-    gpu_available: bool = Field(description="Whether GPU is available")
 
 
 class UniRig(
@@ -232,23 +150,18 @@ class UniRig(
     num_gpus = 1
 
     requirements = [
-        # Core ML dependencies
         "torch==2.5.1+cu124",
         "torchvision==0.20.1+cu124",
         "transformers==4.51.3",
         "huggingface_hub>=0.20.0",
         "lightning>=2.0.0",
         "pytorch_lightning>=2.0.0",
-        # Flash attention
         "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiFALSE-cp311-cp311-linux_x86_64.whl",
-        # 3D processing
         "trimesh>=4.0.0",
         "open3d>=0.18.0",
         "fast-simplification>=0.1.0",
-        # Blender Python API
         "bpy==4.2",
-        # Other dependencies
-        "python-box>=7.0.0",  # Required by UniRig internals
+        "python-box>=7.0.0",
         "einops>=0.7.0",
         "omegaconf>=2.3.0",
         "addict>=2.4.0",
@@ -259,12 +172,9 @@ class UniRig(
         "requests>=2.28.0",
         "PyYAML>=6.0",
         "psutil>=5.9.0",
-        # PyTorch Geometric dependencies
         "https://data.pyg.org/whl/torch-2.5.0%2Bcu124/torch_cluster-1.6.3%2Bpt25cu124-cp311-cp311-linux_x86_64.whl",
         "https://data.pyg.org/whl/torch-2.5.0%2Bcu124/torch_scatter-2.1.2%2Bpt25cu124-cp311-cp311-linux_x86_64.whl",
-        # Spconv for sparse convolutions
         "spconv-cu124>=2.3.0",
-        # Extra index URLs
         "--extra-index-url",
         "https://download.pytorch.org/whl/cu124",
     ]
@@ -277,14 +187,11 @@ class UniRig(
     SKIN_CKPT = "skin/articulation-xl/model.ckpt"
 
     async def setup(self) -> None:
-        """Initialize the UniRig models and environment."""
         import torch
         
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
         
-        # Clone the UniRig repository
-        print("Cloning UniRig repository...")
         self.repo_dir = str(
             clone_repository(
                 f"https://github.com/{self.GITHUB_REPO}.git",
@@ -293,19 +200,13 @@ class UniRig(
                 repo_name="unirig",
             )
         )
-        print(f"Repository cloned to: {self.repo_dir}")
         
-        # Add repo to Python path
         if self.repo_dir not in sys.path:
             sys.path.insert(0, self.repo_dir)
         
         os.chdir(self.repo_dir)
-        
-        # Patch UniRig code for CUDA compatibility
         self._patch_unirig_code()
         
-        # Download model checkpoints
-        print("Downloading model checkpoints from HuggingFace...")
         weights_dir = Path(FAL_MODEL_WEIGHTS_DIR) / "unirig"
         weights_dir.mkdir(parents=True, exist_ok=True)
         
@@ -314,44 +215,27 @@ class UniRig(
             filename=self.SKELETON_CKPT,
             local_dir=str(weights_dir),
         )
-        print(f"Skeleton checkpoint: {self.skeleton_ckpt_path}")
         
         self.skin_ckpt_path = safe_hf_download(
             repo_id=self.HF_REPO_ID,
             filename=self.SKIN_CKPT,
             local_dir=str(weights_dir),
         )
-        print(f"Skin checkpoint: {self.skin_ckpt_path}")
         
-        # Configure PyTorch
         torch.set_grad_enabled(False)
         torch.set_float32_matmul_precision('high')
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Using device: {self.device}")
         
-        # Load configurations
-        print("Loading model configurations...")
         self._load_configs()
-        
-        # Load models
-        print("Loading skeleton model...")
         self._load_skeleton_model()
-        
-        print("Loading skin model...")
         self._load_skin_model()
-        
-        print("UniRig setup complete!")
 
     def _patch_unirig_code(self) -> None:
-        """Patch UniRig code for CUDA compatibility in headless environments."""
-        # Patch 1: Fix offset tensor device in unirig_skin.py
-        # The offset needs to be on the same device as coordinates for segment_csr
         skin_model_path = os.path.join(self.repo_dir, "src/model/unirig_skin.py")
         with open(skin_model_path, 'r') as f:
             content = f.read()
         
-        # Replace the line that creates offset tensor without device specification
         old_line = "'offset': torch.tensor(batch['offset']),"
         new_line = "'offset': torch.tensor(batch['offset']).to(vertices.device),"
         
@@ -359,24 +243,17 @@ class UniRig(
             content = content.replace(old_line, new_line)
             with open(skin_model_path, 'w') as f:
                 f.write(content)
-            print("Patched unirig_skin.py: offset tensor now moves to correct device")
-        
-        # Patch 2: Fix PYOPENGL_PLATFORM in vertex_group.py (use open3d instead of pyrender for headless)
-        # We'll handle this by patching the config instead (see _load_configs)
 
     def _load_yaml(self, path: str) -> dict:
-        """Load a YAML config file."""
         import yaml
         full_path = os.path.join(self.repo_dir, path)
         with open(full_path, 'r') as f:
             return yaml.safe_load(f)
 
     def _load_configs(self) -> None:
-        """Load all required configurations."""
         from src.tokenizer.spec import TokenizerConfig
         from src.data.transform import TransformConfig
         
-        # Skeleton model configs
         self.skeleton_tokenizer_config = TokenizerConfig.parse(
             dict_to_attr(self._load_yaml("configs/tokenizer/tokenizer_parts_articulationxl_256.yaml"))
         )
@@ -387,17 +264,12 @@ class UniRig(
         self.skeleton_model_config = self._load_yaml("configs/model/unirig_ar_350m_1024_81920_float32.yaml")
         self.skeleton_system_config = self._load_yaml("configs/system/ar_inference_articulationxl.yaml")
         
-        # Skin model configs
         skin_transform_yaml = self._load_yaml("configs/transform/inference_skin_transform.yaml")
-        
-        # Patch voxel_skin backend from 'pyrender' to 'open3d' to avoid OpenGL/EGL issues
-        # in headless environments (pyrender requires a display, open3d works headless)
         predict_config = skin_transform_yaml.get('predict_transform_config', {})
         vertex_group_config = predict_config.get('vertex_group_config', {})
         voxel_skin_kwargs = vertex_group_config.get('kwargs', {}).get('voxel_skin', {})
         if voxel_skin_kwargs.get('backend') == 'pyrender':
             voxel_skin_kwargs['backend'] = 'open3d'
-            print("Patched voxel_skin backend from 'pyrender' to 'open3d' for headless operation")
         
         self.skin_transform_config = TransformConfig.parse(
             dict_to_attr(predict_config)
@@ -405,28 +277,22 @@ class UniRig(
         self.skin_model_config = self._load_yaml("configs/model/unirig_skin.yaml")
 
     def _load_skeleton_model(self) -> None:
-        """Load the skeleton prediction model."""
         import torch
         from src.tokenizer.parse import get_tokenizer
         from src.model.parse import get_model
         from src.data.order import get_order
         
-        # Create tokenizer
         self.skeleton_tokenizer = get_tokenizer(config=self.skeleton_tokenizer_config)
         
-        # Create model - convert nested dicts to attr-accessible objects
         model_config = dict_to_attr(self.skeleton_model_config)
         model_kwargs = dict(model_config)
         model_kwargs['tokenizer'] = self.skeleton_tokenizer
         self.skeleton_model = get_model(**model_kwargs)
         
-        # Load checkpoint
         checkpoint = torch.load(self.skeleton_ckpt_path, map_location=self.device)
         
-        # Extract model state dict from Lightning checkpoint
         if 'state_dict' in checkpoint:
             state_dict = checkpoint['state_dict']
-            # Remove 'model.' prefix if present
             state_dict = {k.replace('model.', ''): v for k, v in state_dict.items()}
         else:
             state_dict = checkpoint
@@ -435,31 +301,23 @@ class UniRig(
         self.skeleton_model.to(self.device)
         self.skeleton_model.eval()
         
-        # Get generation kwargs from system config
-        # Filter out keys that are used by predict_step but not by generate()
         raw_generate_kwargs = dict(self.skeleton_system_config.get('generate_kwargs', {}))
         keys_to_remove = ['no_cls', 'assign_cls', 'use_dir_cls']
         self.skeleton_generate_kwargs = {k: v for k, v in raw_generate_kwargs.items() if k not in keys_to_remove}
         
-        # Get order for name generation
         if self.skeleton_transform_config.order_config is not None:
             self.skeleton_order = get_order(config=self.skeleton_transform_config.order_config)
         else:
             self.skeleton_order = None
-        
-        print(f"Skeleton model loaded on {self.device}")
 
     def _load_skin_model(self) -> None:
-        """Load the skin prediction model."""
         import torch
         from src.model.parse import get_model
         
-        # Create model - convert nested dicts to attr-accessible objects
         model_config = dict_to_attr(self.skin_model_config)
         model_kwargs = dict(model_config)
         self.skin_model = get_model(**model_kwargs)
         
-        # Load checkpoint
         checkpoint = torch.load(self.skin_ckpt_path, map_location=self.device)
         
         if 'state_dict' in checkpoint:
@@ -471,11 +329,8 @@ class UniRig(
         self.skin_model.load_state_dict(state_dict, strict=False)
         self.skin_model.to(self.device)
         self.skin_model.eval()
-        
-        print(f"Skin model loaded on {self.device}")
 
     def _download_input_file(self, url: str, work_dir: Path) -> Path:
-        """Download input file from URL."""
         import requests
         
         url_path = url.split("?")[0]
@@ -510,7 +365,6 @@ class UniRig(
         input_file: Path,
         faces_target_count: int,
     ) -> 'RawData':
-        """Extract and process mesh from input file."""
         os.chdir(self.repo_dir)
         
         from src.data.extract import clean_bpy, load, process_mesh, get_arranged_bones, process_armature
@@ -538,9 +392,7 @@ class UniRig(
         else:
             joints, tails, parents, names, matrix_local = None, None, None, None, None
         
-        # Simplify mesh if needed
-        # Note: faces from process_mesh are 1-indexed (Blender convention)
-        mesh = trimesh.Trimesh(vertices=vertices, faces=faces - 1)  # Convert to 0-indexed
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces - 1)
         vertices = np.array(mesh.vertices, dtype=np.float32)
         faces_simplified = np.array(mesh.faces, dtype=np.int64)
         
@@ -571,7 +423,6 @@ class UniRig(
         raw_data: 'RawData',
         seed: int,
     ) -> 'RawData':
-        """Run skeleton prediction on the mesh."""
         import torch
         import numpy as np
         import random
@@ -579,18 +430,15 @@ class UniRig(
         from src.data.transform import transform_asset
         from src.data.raw_data import RawData, RawSkeleton
         
-        # Set seeds manually
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
         
-        # Synchronize CUDA to catch any pending errors
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         
-        # Create asset from raw data
         asset = Asset.from_raw_data(
             raw_data=raw_data,
             cls="unknown",
@@ -598,18 +446,14 @@ class UniRig(
             data_name="raw_data.npz",
         )
         
-        # Apply transforms
         transform_asset(asset=asset, transform_config=self.skeleton_transform_config)
         
-        # Prepare input tensors
         vertices = torch.from_numpy(asset.sampled_vertices).float().to(self.device)
         normals = torch.from_numpy(asset.sampled_normals).float().to(self.device)
         
-        # Synchronize before inference
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         
-        # Run inference
         with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
             result = self.skeleton_model.generate(
                 vertices=vertices,
@@ -618,10 +462,8 @@ class UniRig(
                 **self.skeleton_generate_kwargs,
             )
         
-        # Create skeleton from result
         skeleton = RawSkeleton.from_detokenize_output(res=result, order=self.skeleton_order)
         
-        # Create new RawData with skeleton
         skeleton_data = RawData(
             vertices=raw_data.vertices,
             vertex_normals=raw_data.vertex_normals,
@@ -643,14 +485,12 @@ class UniRig(
         self,
         raw_data: 'RawData',
     ) -> 'RawData':
-        """Run skin prediction on mesh with skeleton."""
         import torch
         import numpy as np
         from src.data.asset import Asset
         from src.data.transform import transform_asset
         from src.data.raw_data import RawData
         
-        # Create asset
         asset = Asset.from_raw_data(
             raw_data=raw_data,
             cls=raw_data.cls if hasattr(raw_data, 'cls') and raw_data.cls else "unknown",
@@ -658,19 +498,15 @@ class UniRig(
             data_name="raw_data.npz",
         )
         
-        # Apply transforms - this computes voxel_skin in vertex_groups
         transform_asset(asset=asset, transform_config=self.skin_transform_config)
         
-        # Convert parents to tensor (handling None values)
         parents_list = []
         for p in raw_data.parents:
             parents_list.append(p if p is not None else -1)
         parents_tensor = torch.tensor(parents_list, dtype=torch.long).unsqueeze(0).to(self.device)
         
-        # Get number of sampled vertices for offset calculation
         num_vertices = asset.sampled_vertices.shape[0]
         
-        # Prepare batch
         batch = {
             'vertices': torch.from_numpy(asset.sampled_vertices).float().unsqueeze(0).to(self.device),
             'normals': torch.from_numpy(asset.sampled_normals).float().unsqueeze(0).to(self.device),
@@ -678,20 +514,17 @@ class UniRig(
             'tails': torch.from_numpy(raw_data.tails).float().unsqueeze(0).to(self.device),
             'parents': parents_tensor,
             'num_bones': torch.tensor([len(raw_data.joints)]).to(self.device),
-            'offset': [num_vertices],  # Offset for PTv3 mesh encoder
+            'offset': [num_vertices],
             'path': ['inference'],
             'cls': [raw_data.cls if hasattr(raw_data, 'cls') and raw_data.cls else 'unknown'],
         }
         
-        # Add voxel_skin from vertex groups (required by skin model)
         if hasattr(asset, 'sampled_vertex_groups') and asset.sampled_vertex_groups:
             if 'voxel_skin' in asset.sampled_vertex_groups:
                 voxel_skin = asset.sampled_vertex_groups['voxel_skin']
                 batch['voxel_skin'] = torch.from_numpy(voxel_skin).float().unsqueeze(0).to(self.device)
         
-        # If voxel_skin not in vertex groups, compute a fallback
         if 'voxel_skin' not in batch:
-            # Create a simple distance-based skin weight as fallback
             num_joints = len(raw_data.joints)
             voxel_skin = np.zeros((num_vertices, num_joints), dtype=np.float32)
             for j in range(num_joints):
@@ -700,12 +533,9 @@ class UniRig(
             voxel_skin = voxel_skin / voxel_skin.sum(axis=1, keepdims=True)
             batch['voxel_skin'] = torch.from_numpy(voxel_skin).float().unsqueeze(0).to(self.device)
         
-        # Run inference
         with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
             results = self.skin_model.predict_step(batch)
         
-        # Extract skin weights - predict_step returns a list of tensors
-        # Each element is (N, num_bones) for that batch item
         if isinstance(results, list) and len(results) > 0:
             skin = results[0]
             if hasattr(skin, 'cpu'):
@@ -715,11 +545,9 @@ class UniRig(
         else:
             skin = np.array(results[0])
         
-        # Ensure skin has the right shape (N, J)
         if skin.ndim == 1:
             skin = skin.reshape(-1, len(raw_data.joints))
         
-        # Create output with skin
         skinned_data = RawData(
             vertices=raw_data.vertices,
             vertex_normals=raw_data.vertex_normals,
@@ -737,13 +565,11 @@ class UniRig(
         return skinned_data
 
     def _export_fbx(self, raw_data: 'RawData', output_path: Path) -> Path:
-        """Export RawData to FBX file."""
         output_path.parent.mkdir(parents=True, exist_ok=True)
         raw_data.export_fbx(path=str(output_path), use_tail=True)
         return output_path
 
     def _convert_to_glb(self, fbx_file: Path) -> Path:
-        """Convert FBX to GLB format using Blender."""
         import bpy
         from src.data.extract import clean_bpy
         
@@ -751,7 +577,6 @@ class UniRig(
         bpy.ops.import_scene.fbx(filepath=str(fbx_file), ignore_leaf_bones=False)
         
         glb_file = fbx_file.with_suffix(".glb")
-        # Use export_format='GLB' to ensure binary GLB output
         bpy.ops.export_scene.gltf(
             filepath=str(glb_file),
             export_format='GLB',
@@ -765,7 +590,6 @@ class UniRig(
         original_file: Path,
         output_path: Path,
     ) -> Path:
-        """Merge skeleton/skin with original mesh to preserve textures."""
         os.chdir(self.repo_dir)
         from src.inference.merge import merge
         
@@ -789,36 +613,24 @@ class UniRig(
         request: Request,
         response: Response,
     ) -> UniRigOutput:
-        """
-        Generate a fully rigged 3D model with skeleton and skinning weights.
-        """
         seed = get_seed(input.seed)
         work_dir = Path(tempfile.mkdtemp(prefix="unirig_"))
         
         try:
             os.chdir(self.repo_dir)
             
-            # Download input file
             input_file = self._download_input_file(input.mesh_file, work_dir)
-            
-            # Extract mesh
             raw_data = self._extract_mesh(input_file, input.faces_target_count)
-            
-            # Predict skeleton
             skeleton_data = self._predict_skeleton(raw_data, seed)
             
-            # Export skeleton
             skeleton_output = work_dir / "skeleton.fbx"
             self._export_fbx(skeleton_data, skeleton_output)
             
-            # Predict skin
             skinned_data = self._predict_skin(skeleton_data)
             
-            # Merge with original mesh
             rigged_output = work_dir / "rigged.fbx"
             self._merge_with_original(skinned_data, input_file, rigged_output)
             
-            # Convert format if needed
             if input.output_format == "glb":
                 rigged_output = self._convert_to_glb(rigged_output)
                 if skeleton_output.exists():
@@ -834,103 +646,6 @@ class UniRig(
             
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
-
-    @fal.endpoint("/skeleton")
-    def generate_skeleton(
-        self,
-        input: SkeletonOnlyInput,
-        request: Request,
-        response: Response,
-    ) -> SkeletonOutput:
-        """Generate skeleton only (without skinning weights)."""
-        seed = get_seed(input.seed)
-        work_dir = Path(tempfile.mkdtemp(prefix="unirig_skeleton_"))
-        
-        try:
-            os.chdir(self.repo_dir)
-            
-            input_file = self._download_input_file(input.mesh_file, work_dir)
-            raw_data = self._extract_mesh(input_file, input.faces_target_count)
-            skeleton_data = self._predict_skeleton(raw_data, seed)
-            
-            skeleton_output = work_dir / "skeleton.fbx"
-            self._export_fbx(skeleton_data, skeleton_output)
-            
-            if input.output_format == "glb":
-                skeleton_output = self._convert_to_glb(skeleton_output)
-            
-            response.headers["x-fal-billable-units"] = "1"
-            
-            return SkeletonOutput(
-                skeleton_file=File.from_path(str(skeleton_output), request=request),
-                seed=seed,
-            )
-            
-        finally:
-            shutil.rmtree(work_dir, ignore_errors=True)
-
-    @fal.endpoint("/skin")
-    def generate_skin(
-        self,
-        input: SkinOnlyInput,
-        request: Request,
-        response: Response,
-    ) -> SkinOutput:
-        """Generate skinning weights for a mesh with existing skeleton."""
-        work_dir = Path(tempfile.mkdtemp(prefix="unirig_skin_"))
-        
-        try:
-            os.chdir(self.repo_dir)
-            
-            input_file = self._download_input_file(input.mesh_file, work_dir)
-            
-            if input.original_mesh_file:
-                original_dir = work_dir / "original"
-                original_dir.mkdir(parents=True, exist_ok=True)
-                original_file = self._download_input_file(input.original_mesh_file, original_dir)
-            else:
-                original_file = input_file
-            
-            raw_data = self._extract_mesh(input_file, input.faces_target_count)
-            
-            if raw_data.joints is None:
-                raise FieldException("mesh_file", "Input file must contain a skeleton for skin prediction")
-            
-            skinned_data = self._predict_skin(raw_data)
-            
-            skinned_output = work_dir / "skinned.fbx"
-            if input.original_mesh_file:
-                self._merge_with_original(skinned_data, original_file, skinned_output)
-            else:
-                self._export_fbx(skinned_data, skinned_output)
-            
-            if input.output_format == "glb":
-                skinned_output = self._convert_to_glb(skinned_output)
-            
-            response.headers["x-fal-billable-units"] = "1"
-            
-            return SkinOutput(
-                skinned_file=File.from_path(str(skinned_output), request=request),
-            )
-            
-        finally:
-            shutil.rmtree(work_dir, ignore_errors=True)
-
-    @fal.endpoint("/health")
-    def health_check(
-        self,
-        request: Request,
-        response: Response,
-    ) -> HealthOutput:
-        """Health check endpoint."""
-        import torch
-        
-        return HealthOutput(
-            status="healthy",
-            version="UniRig v1.0 (Articulation-XL)",
-            gpu_available=torch.cuda.is_available(),
-        )
-
 
 if __name__ == "__main__":
     app = fal.wrap_app(UniRig)
