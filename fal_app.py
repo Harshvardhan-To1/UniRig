@@ -10,6 +10,8 @@ UniRig is a unified framework for automatic 3D model rigging that:
 - Handles diverse 3D models (humans, animals, objects) with a single model
 
 Paper: "One Model to Rig Them All: Diverse Skeleton Rigging with UniRig" (SIGGRAPH'25)
+GitHub: https://github.com/VAST-AI-Research/UniRig
+Model: https://huggingface.co/VAST-AI/UniRig
 """
 
 import os
@@ -43,6 +45,34 @@ def get_seed(seed: int | None) -> int:
         import random
         return random.randint(0, 2**32 - 1)
     return seed
+
+
+def safe_hf_download(
+    repo_id: str,
+    filename: str,
+    local_dir: str,
+    max_retries: int = 3,
+) -> str:
+    """Download a file from HuggingFace with retry logic."""
+    from huggingface_hub import hf_hub_download
+    import time
+    
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            return hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                local_dir=local_dir,
+            )
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                wait_time = 4 * (2 ** attempt)  # 4s, 8s, 16s
+                print(f"Download attempt {attempt + 1} failed: {e}, retrying in {wait_time}s...")
+                time.sleep(wait_time)
+    
+    raise RuntimeError(f"Failed to download {filename} from {repo_id}: {last_error}")
 
 
 class UniRigInput(BaseModel):
@@ -161,6 +191,14 @@ class SkinOutput(BaseModel):
     )
 
 
+class HealthOutput(BaseModel):
+    """Output schema for health check."""
+    
+    status: str = Field(description="Service status")
+    version: str = Field(description="UniRig version info")
+    gpu_available: bool = Field(description="Whether GPU is available")
+
+
 class UniRig(
     fal.App,
     name="unirig",
@@ -228,8 +266,10 @@ class UniRig(
         import torch
         
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
         
         # Clone the UniRig repository
+        print("Cloning UniRig repository...")
         self.repo_dir = str(
             clone_repository(
                 f"https://github.com/{self.GITHUB_REPO}.git",
@@ -238,47 +278,52 @@ class UniRig(
                 repo_name="unirig",
             )
         )
+        print(f"Repository cloned to: {self.repo_dir}")
         
         # Add repo to Python path
         if self.repo_dir not in sys.path:
             sys.path.insert(0, self.repo_dir)
         
-        # Download model checkpoints from HuggingFace
-        from huggingface_hub import hf_hub_download
-        
+        # Download model checkpoints from HuggingFace with retry logic
+        print("Downloading model checkpoints from HuggingFace...")
         weights_dir = Path(FAL_MODEL_WEIGHTS_DIR) / "unirig"
         weights_dir.mkdir(parents=True, exist_ok=True)
         
         # Download skeleton model checkpoint
-        self.skeleton_ckpt_path = hf_hub_download(
+        self.skeleton_ckpt_path = safe_hf_download(
             repo_id=self.HF_REPO_ID,
             filename=self.SKELETON_CKPT,
             local_dir=str(weights_dir),
         )
+        print(f"Skeleton checkpoint downloaded: {self.skeleton_ckpt_path}")
         
         # Download skin model checkpoint
-        self.skin_ckpt_path = hf_hub_download(
+        self.skin_ckpt_path = safe_hf_download(
             repo_id=self.HF_REPO_ID,
             filename=self.SKIN_CKPT,
             local_dir=str(weights_dir),
         )
+        print(f"Skin checkpoint downloaded: {self.skin_ckpt_path}")
         
-        # Set up symlinks so the default paths work
+        # Set up symlinks so the default checkpoint paths in configs work
         experiments_dir = Path(self.repo_dir) / "experiments"
         experiments_dir.mkdir(parents=True, exist_ok=True)
         
+        # Symlink skeleton checkpoint
         skeleton_exp_dir = experiments_dir / "skeleton" / "articulation-xl_quantization_256"
         skeleton_exp_dir.mkdir(parents=True, exist_ok=True)
         skeleton_ckpt_link = skeleton_exp_dir / "model.ckpt"
-        if not skeleton_ckpt_link.exists():
+        if not skeleton_ckpt_link.exists() and not skeleton_ckpt_link.is_symlink():
             skeleton_ckpt_link.symlink_to(self.skeleton_ckpt_path)
         
+        # Symlink skin checkpoint
         skin_exp_dir = experiments_dir / "skin" / "articulation-xl"
         skin_exp_dir.mkdir(parents=True, exist_ok=True)
         skin_ckpt_link = skin_exp_dir / "model.ckpt"
-        if not skin_ckpt_link.exists():
+        if not skin_ckpt_link.exists() and not skin_ckpt_link.is_symlink():
             skin_ckpt_link.symlink_to(self.skin_ckpt_path)
         
+        # Configure PyTorch
         torch.set_grad_enabled(False)
         torch.set_float32_matmul_precision('high')
         
@@ -294,7 +339,10 @@ class UniRig(
             raise RuntimeError(f"Skin config not found: {self.skin_task_config}")
         
         # Warm up by importing necessary modules
+        print("Importing UniRig modules...")
         self._import_modules()
+        
+        print("UniRig setup complete!")
 
     def _import_modules(self) -> None:
         """Import UniRig modules to warm up the system."""
@@ -760,6 +808,26 @@ class UniRig(
             
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
+
+    @fal.endpoint("/health")
+    def health_check(
+        self,
+        request: Request,
+        response: Response,
+    ) -> HealthOutput:
+        """
+        Health check endpoint.
+        
+        Returns the service status, version information, and GPU availability.
+        Use this to verify the service is ready to accept requests.
+        """
+        import torch
+        
+        return HealthOutput(
+            status="healthy",
+            version="UniRig v1.0 (Articulation-XL)",
+            gpu_available=torch.cuda.is_available(),
+        )
 
 
 if __name__ == "__main__":
