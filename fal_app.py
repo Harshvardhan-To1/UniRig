@@ -384,8 +384,9 @@ class UniRig(
         # Create tokenizer
         self.skeleton_tokenizer = get_tokenizer(config=self.skeleton_tokenizer_config)
         
-        # Create model
-        model_kwargs = dict(self.skeleton_model_config)
+        # Create model - convert nested dicts to attr-accessible objects
+        model_config = dict_to_attr(self.skeleton_model_config)
+        model_kwargs = dict(model_config)
         model_kwargs['tokenizer'] = self.skeleton_tokenizer
         self.skeleton_model = get_model(**model_kwargs)
         
@@ -420,8 +421,9 @@ class UniRig(
         import torch
         from src.model.parse import get_model
         
-        # Create model
-        model_kwargs = dict(self.skin_model_config)
+        # Create model - convert nested dicts to attr-accessible objects
+        model_config = dict_to_attr(self.skin_model_config)
+        model_kwargs = dict(model_config)
         self.skin_model = get_model(**model_kwargs)
         
         # Load checkpoint
