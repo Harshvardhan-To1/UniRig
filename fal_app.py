@@ -406,7 +406,10 @@ class UniRig(
         self.skeleton_model.eval()
         
         # Get generation kwargs from system config
-        self.skeleton_generate_kwargs = dict(self.skeleton_system_config.get('generate_kwargs', {}))
+        # Filter out keys that are used by predict_step but not by generate()
+        raw_generate_kwargs = dict(self.skeleton_system_config.get('generate_kwargs', {}))
+        keys_to_remove = ['no_cls', 'assign_cls', 'use_dir_cls']
+        self.skeleton_generate_kwargs = {k: v for k, v in raw_generate_kwargs.items() if k not in keys_to_remove}
         
         # Get order for name generation
         if self.skeleton_transform_config.order_config is not None:
