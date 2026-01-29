@@ -695,6 +695,8 @@ class UniRig(
         print(f"NPZ file created: {expected_npz}")
         
         # Step 2: Run skeleton prediction
+        # This creates: npz_dir/model_name/predict_skeleton.npz (for skin phase)
+        #               and output skeleton.fbx
         skeleton_output = output_dir / "skeleton.fbx"
         skeleton_file = self._run_skeleton_prediction(
             input_file=input_file,
@@ -703,10 +705,26 @@ class UniRig(
             seed=seed,
         )
         
+        # Verify skeleton npz was created (needed for skin phase)
+        skeleton_npz = model_npz_dir / "predict_skeleton.npz"
+        if not skeleton_npz.exists():
+            print(f"Warning: predict_skeleton.npz not found at {skeleton_npz}")
+            # Try to find it elsewhere
+            possible_locations = list(work_dir.rglob("predict_skeleton.npz"))
+            if possible_locations:
+                print(f"Found predict_skeleton.npz at: {possible_locations[0]}")
+            else:
+                raise RuntimeError(f"Skeleton prediction did not create predict_skeleton.npz")
+        else:
+            print(f"Skeleton NPZ created: {skeleton_npz}")
+        
         # Step 3: Run skin prediction
+        # IMPORTANT: Use the ORIGINAL input file path, not the skeleton FBX!
+        # run.py uses the input path to locate predict_skeleton.npz:
+        #   npz_dir / input_stem / predict_skeleton.npz
         skinned_output = output_dir / "skinned.fbx"
         skinned_file = self._run_skin_prediction(
-            input_file=skeleton_file,
+            input_file=input_file,  # Use original input, NOT skeleton_file
             npz_dir=npz_dir,
             output_file=skinned_output,
         )
