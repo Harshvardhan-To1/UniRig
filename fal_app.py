@@ -14,7 +14,10 @@ GitHub: https://github.com/VAST-AI-Research/UniRig
 Model: https://huggingface.co/VAST-AI/UniRig
 """
 
+# Set OpenGL platform for headless rendering BEFORE any imports
+# This is required for pyrender to work without a display
 import os
+os.environ["PYOPENGL_PLATFORM"] = "osmesa"
 import shutil
 import sys
 import tempfile
@@ -246,6 +249,8 @@ class UniRig(
         "open3d>=0.18.0",
         "fast-simplification>=0.1.0",
         "pyrender>=0.1.45",
+        "PyOpenGL>=3.1.0",  # Required for pyrender
+        "PyOpenGL-accelerate>=3.1.0",  # Accelerated OpenGL bindings
         # Blender Python API
         "bpy==4.2",
         # Other dependencies
@@ -268,6 +273,13 @@ class UniRig(
         # Extra index URLs
         "--extra-index-url",
         "https://download.pytorch.org/whl/cu124",
+    ]
+    
+    # System packages for OSMesa (headless OpenGL rendering)
+    system_packages = [
+        "libosmesa6-dev",
+        "libgl1-mesa-glx",
+        "libglib2.0-0",
     ]
 
     GITHUB_REPO = "VAST-AI-Research/UniRig"
