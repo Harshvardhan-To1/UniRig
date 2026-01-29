@@ -672,15 +672,27 @@ class UniRig(
     ) -> tuple[Path, Path]:
         """Run the complete skeleton + skin pipeline."""
         
-        npz_dir = work_dir / "npz"
+        # UniRig's run.py expects npz files to be at: npz_dir/model_name/raw_data.npz
+        # where model_name is the stem of the input file
+        # The npz_dir is passed to run.py via --npz_dir argument
+        npz_dir = work_dir  # Use work_dir directly as npz_dir base
         output_dir = work_dir / "output"
         output_dir.mkdir(parents=True, exist_ok=True)
         
         model_name = input_file.stem
         model_npz_dir = npz_dir / model_name
         
+        print(f"Extracting mesh to: {model_npz_dir}")
+        
         # Step 1: Extract mesh to NPZ format
+        # This creates: npz_dir/model_name/raw_data.npz
         self._extract_mesh(input_file, model_npz_dir, faces_target_count)
+        
+        # Verify the npz file was created
+        expected_npz = model_npz_dir / "raw_data.npz"
+        if not expected_npz.exists():
+            raise RuntimeError(f"Mesh extraction failed: {expected_npz} not found")
+        print(f"NPZ file created: {expected_npz}")
         
         # Step 2: Run skeleton prediction
         skeleton_output = output_dir / "skeleton.fbx"
@@ -792,7 +804,8 @@ class UniRig(
             # Download input file
             input_file = self._download_input_file(input.mesh_file, work_dir)
             
-            npz_dir = work_dir / "npz"
+            # Use work_dir directly as npz_dir base (run.py expects: npz_dir/model_name/raw_data.npz)
+            npz_dir = work_dir
             output_dir = work_dir / "output"
             output_dir.mkdir(parents=True, exist_ok=True)
             
@@ -854,11 +867,14 @@ class UniRig(
             
             # Download original mesh if provided (for texture/material merging)
             if input.original_mesh_file:
-                original_file = self._download_input_file(input.original_mesh_file, work_dir / "original")
+                original_dir = work_dir / "original"
+                original_dir.mkdir(parents=True, exist_ok=True)
+                original_file = self._download_input_file(input.original_mesh_file, original_dir)
             else:
                 original_file = input_file
             
-            npz_dir = work_dir / "npz"
+            # Use work_dir directly as npz_dir base
+            npz_dir = work_dir
             output_dir = work_dir / "output"
             output_dir.mkdir(parents=True, exist_ok=True)
             
