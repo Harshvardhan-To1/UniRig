@@ -380,8 +380,18 @@ class UniRig(
         
         # Skin model configs
         skin_transform_yaml = self._load_yaml("configs/transform/inference_skin_transform.yaml")
+        
+        # Patch voxel_skin backend from 'pyrender' to 'open3d' to avoid OpenGL/EGL issues
+        # in headless environments (pyrender requires a display, open3d works headless)
+        predict_config = skin_transform_yaml.get('predict_transform_config', {})
+        vertex_group_config = predict_config.get('vertex_group_config', {})
+        voxel_skin_kwargs = vertex_group_config.get('kwargs', {}).get('voxel_skin', {})
+        if voxel_skin_kwargs.get('backend') == 'pyrender':
+            voxel_skin_kwargs['backend'] = 'open3d'
+            print("Patched voxel_skin backend from 'pyrender' to 'open3d' for headless rendering")
+        
         self.skin_transform_config = TransformConfig.parse(
-            dict_to_attr(skin_transform_yaml.get('predict_transform_config', {}))
+            dict_to_attr(predict_config)
         )
         self.skin_model_config = self._load_yaml("configs/model/unirig_skin.yaml")
 
