@@ -296,6 +296,8 @@ class UniRig(
         
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
+        # Enable synchronous CUDA error reporting for better debugging
+        os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
         
         # Clone the UniRig repository
         print("Cloning UniRig repository...")
@@ -600,12 +602,22 @@ class UniRig(
         """Run skeleton prediction on the mesh."""
         import torch
         import numpy as np
-        import lightning as L
+        import random
         from src.data.asset import Asset
         from src.data.transform import transform_asset
         from src.data.raw_data import RawData, RawSkeleton
         
-        L.seed_everything(seed, workers=True)
+        # Set seeds manually without using lightning's seed_everything
+        # to avoid potential CUDA synchronization issues
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        
+        # Synchronize CUDA to catch any pending errors
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         
         # Create asset from raw data
         asset = Asset.from_raw_data(
@@ -621,6 +633,10 @@ class UniRig(
         # Prepare input tensors
         vertices = torch.from_numpy(asset.sampled_vertices).float().to(self.device)
         normals = torch.from_numpy(asset.sampled_normals).float().to(self.device)
+        
+        # Synchronize before inference
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         
         # Run inference
         with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
