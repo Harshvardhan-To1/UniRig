@@ -315,6 +315,9 @@ class UniRig(
         
         os.chdir(self.repo_dir)
         
+        # Patch UniRig code for CUDA compatibility
+        self._patch_unirig_code()
+        
         # Download model checkpoints
         print("Downloading model checkpoints from HuggingFace...")
         weights_dir = Path(FAL_MODEL_WEIGHTS_DIR) / "unirig"
@@ -353,6 +356,40 @@ class UniRig(
         self._load_skin_model()
         
         print("UniRig setup complete!")
+
+    def _patch_unirig_code(self) -> None:
+        """Patch UniRig code for CUDA compatibility in headless environments."""
+        import re
+        
+        # Patch 1: Fix offset tensor device in unirig_skin.py
+        # The offset needs to be on the same device as coordinates for segment_csr
+        skin_model_path = os.path.join(self.repo_dir, "src/model/unirig_skin.py")
+        with open(skin_model_path, 'r') as f:
+            content = f.read()
+        
+        # Replace the line that creates offset tensor without device specification
+        old_line = "'offset': torch.tensor(batch['offset']),"
+        new_line = "'offset': torch.tensor(batch['offset']).to(vertices.device),"
+        
+        if old_line in content:
+            content = content.replace(old_line, new_line)
+            with open(skin_model_path, 'w') as f:
+                f.write(content)
+            print("Patched unirig_skin.py: offset tensor now moves to correct device")
+        
+        # Patch 2: Fix PYOPENGL_PLATFORM in vertex_group.py (use osmesa instead of egl)
+        vertex_group_path = os.path.join(self.repo_dir, "src/data/vertex_group.py")
+        with open(vertex_group_path, 'r') as f:
+            content = f.read()
+        
+        old_opengl = "os.environ['PYOPENGL_PLATFORM'] = 'egl'"
+        new_opengl = "os.environ['PYOPENGL_PLATFORM'] = 'osmesa'"
+        
+        if old_opengl in content:
+            content = content.replace(old_opengl, new_opengl)
+            with open(vertex_group_path, 'w') as f:
+                f.write(content)
+            print("Patched vertex_group.py: PYOPENGL_PLATFORM set to osmesa")
 
     def _load_yaml(self, path: str) -> dict:
         """Load a YAML config file."""
