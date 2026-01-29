@@ -46,6 +46,37 @@ def get_seed(seed: int | None) -> int:
     return seed
 
 
+class DictToAttr(dict):
+    """A dict subclass that allows attribute-style access to keys."""
+    def __getattr__(self, key):
+        try:
+            value = self[key]
+            if isinstance(value, dict) and not isinstance(value, DictToAttr):
+                value = DictToAttr(value)
+                self[key] = value
+            return value
+        except KeyError:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{key}'")
+    
+    def __setattr__(self, key, value):
+        self[key] = value
+    
+    def __delattr__(self, key):
+        try:
+            del self[key]
+        except KeyError:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{key}'")
+
+
+def dict_to_attr(d):
+    """Recursively convert a dict to DictToAttr for attribute-style access."""
+    if isinstance(d, dict):
+        return DictToAttr({k: dict_to_attr(v) for k, v in d.items()})
+    elif isinstance(d, list):
+        return [dict_to_attr(item) for item in d]
+    return d
+
+
 def safe_hf_download(
     repo_id: str,
     filename: str,
@@ -218,7 +249,7 @@ class UniRig(
         # Blender Python API
         "bpy==4.2",
         # Other dependencies
-        "python-box>=7.0.0",
+        "python-box>=7.0.0",  # Required by UniRig internals
         "einops>=0.7.0",
         "omegaconf>=2.3.0",
         "addict>=2.4.0",
@@ -250,7 +281,6 @@ class UniRig(
         """Initialize the UniRig models and environment."""
         import torch
         import yaml
-        from box import Box
         
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
@@ -312,12 +342,11 @@ class UniRig(
         
         print("UniRig setup complete!")
 
-    def _load_yaml(self, path: str) -> Box:
+    def _load_yaml(self, path: str) -> dict:
         """Load a YAML config file."""
         import yaml
-        from box import Box
         full_path = os.path.join(self.repo_dir, path)
-        return Box(yaml.safe_load(open(full_path, 'r')))
+        return yaml.safe_load(open(full_path, 'r'))
 
     def _load_configs(self) -> None:
         """Load all required configurations."""
@@ -326,18 +355,21 @@ class UniRig(
         from src.data.order import OrderConfig
         
         # Skeleton model configs
+        # Use dict_to_attr for attribute-style access that UniRig parsers expect
         self.skeleton_tokenizer_config = TokenizerConfig.parse(
-            self._load_yaml("configs/tokenizer/tokenizer_parts_articulationxl_256.yaml")
+            dict_to_attr(self._load_yaml("configs/tokenizer/tokenizer_parts_articulationxl_256.yaml"))
         )
+        ar_transform_yaml = self._load_yaml("configs/transform/inference_ar_transform.yaml")
         self.skeleton_transform_config = TransformConfig.parse(
-            self._load_yaml("configs/transform/inference_ar_transform.yaml").get('predict_transform_config', {})
+            dict_to_attr(ar_transform_yaml.get('predict_transform_config', {}))
         )
         self.skeleton_model_config = self._load_yaml("configs/model/unirig_ar_350m_1024_81920_float32.yaml")
         self.skeleton_system_config = self._load_yaml("configs/system/ar_inference_articulationxl.yaml")
         
         # Skin model configs
+        skin_transform_yaml = self._load_yaml("configs/transform/inference_skin_transform.yaml")
         self.skin_transform_config = TransformConfig.parse(
-            self._load_yaml("configs/transform/inference_skin_transform.yaml").get('predict_transform_config', {})
+            dict_to_attr(skin_transform_yaml.get('predict_transform_config', {}))
         )
         self.skin_model_config = self._load_yaml("configs/model/unirig_skin.yaml")
 
