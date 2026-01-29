@@ -506,14 +506,17 @@ class UniRig(
         """Run skeleton prediction using the AR model."""
         os.chdir(self.repo_dir)
         
-        # Build command to run skeleton prediction
+        # IMPORTANT: Do NOT pass --output to avoid user_mode=True
+        # When user_mode=True, the NPZ files (predict_skeleton.npz) are NOT saved,
+        # which breaks the skin prediction phase.
+        # Instead, let it output to the default location and we'll find/copy the files.
         cmd = [
             sys.executable, "run.py",
             f"--task={self.skeleton_task_config}",
             f"--seed={seed}",
             f"--input={input_file}",
             f"--npz_dir={npz_dir}",
-            f"--output={output_file}",
+            f"--output_dir={output_file.parent}",  # Use output_dir instead of output
         ]
         
         env = os.environ.copy()
@@ -543,22 +546,41 @@ class UniRig(
             error_msg = error_msg[-1000:] if len(error_msg) > 1000 else error_msg
             raise RuntimeError(f"Skeleton prediction failed: {error_msg}")
         
-        # Look for output file in various locations
-        if output_file.exists():
+        print(f"Skeleton prediction completed, searching for output files...")
+        
+        # Find the skeleton FBX file
+        # With output_dir set, it should be at: output_dir/model_name/skeleton.fbx
+        model_name = input_file.stem
+        expected_fbx = output_file.parent / model_name / "skeleton.fbx"
+        
+        if expected_fbx.exists():
+            # Copy to the expected output location
+            shutil.copy(expected_fbx, output_file)
+            print(f"Found skeleton FBX at {expected_fbx}, copied to {output_file}")
             return output_file
         
-        # Check npz_dir for skeleton output
-        possible_outputs = list(npz_dir.rglob("*skeleton*.fbx"))
-        if possible_outputs:
-            return possible_outputs[0]
+        # Search more broadly
+        possible_outputs = list(output_file.parent.rglob("*skeleton*.fbx"))
+        if not possible_outputs:
+            possible_outputs = list(npz_dir.rglob("*skeleton*.fbx"))
         
-        # Also check the output directory
-        output_dir = output_file.parent
-        possible_outputs = list(output_dir.rglob("*.fbx"))
         if possible_outputs:
-            return possible_outputs[0]
+            found_fbx = possible_outputs[0]
+            shutil.copy(found_fbx, output_file)
+            print(f"Found skeleton FBX at {found_fbx}, copied to {output_file}")
+            return output_file
         
-        raise RuntimeError("Skeleton prediction did not produce output file")
+        # List files for debugging
+        print(f"Could not find skeleton FBX. Contents of {output_file.parent}:")
+        for f in output_file.parent.rglob("*"):
+            if f.is_file():
+                print(f"  {f}")
+        print(f"Contents of {npz_dir}:")
+        for f in npz_dir.rglob("*"):
+            if f.is_file():
+                print(f"  {f}")
+        
+        raise RuntimeError("Skeleton prediction did not produce FBX output file")
 
     def _run_skin_prediction(
         self,
@@ -569,12 +591,13 @@ class UniRig(
         """Run skin prediction using the skin model."""
         os.chdir(self.repo_dir)
         
+        # Use output_dir instead of output to avoid user_mode issues
         cmd = [
             sys.executable, "run.py",
             f"--task={self.skin_task_config}",
             f"--input={input_file}",
             f"--npz_dir={npz_dir}",
-            f"--output={output_file}",
+            f"--output_dir={output_file.parent}",
             "--data_name=predict_skeleton.npz",
         ]
         
@@ -602,22 +625,35 @@ class UniRig(
             error_msg = error_msg[-1000:] if len(error_msg) > 1000 else error_msg
             raise RuntimeError(f"Skin prediction failed: {error_msg}")
         
-        if output_file.exists():
+        print(f"Skin prediction completed, searching for output files...")
+        
+        # Find the skinned FBX file
+        model_name = input_file.stem
+        expected_fbx = output_file.parent / model_name / "result_fbx.fbx"
+        
+        if expected_fbx.exists():
+            shutil.copy(expected_fbx, output_file)
+            print(f"Found skinned FBX at {expected_fbx}, copied to {output_file}")
             return output_file
         
-        # Check for alternative output locations
+        # Search more broadly
         possible_outputs = (
-            list(npz_dir.rglob("*result_fbx*.fbx")) + 
-            list(npz_dir.rglob("*skin*.fbx"))
+            list(output_file.parent.rglob("*result_fbx*.fbx")) +
+            list(output_file.parent.rglob("*skin*.fbx")) +
+            list(npz_dir.rglob("*result_fbx*.fbx"))
         )
-        if possible_outputs:
-            return possible_outputs[0]
         
-        # Also check output directory
-        output_dir = output_file.parent
-        possible_outputs = list(output_dir.rglob("*.fbx"))
         if possible_outputs:
-            return possible_outputs[0]
+            found_fbx = possible_outputs[0]
+            shutil.copy(found_fbx, output_file)
+            print(f"Found skinned FBX at {found_fbx}, copied to {output_file}")
+            return output_file
+        
+        # List files for debugging
+        print(f"Could not find skinned FBX. Contents of {output_file.parent}:")
+        for f in output_file.parent.rglob("*"):
+            if f.is_file():
+                print(f"  {f}")
         
         raise RuntimeError("Skin prediction did not produce output file")
 
@@ -708,12 +744,32 @@ class UniRig(
         # Verify skeleton npz was created (needed for skin phase)
         skeleton_npz = model_npz_dir / "predict_skeleton.npz"
         if not skeleton_npz.exists():
-            print(f"Warning: predict_skeleton.npz not found at {skeleton_npz}")
-            # Try to find it elsewhere
+            print(f"predict_skeleton.npz not found at expected location: {skeleton_npz}")
+            
+            # Search for it in all possible locations
+            print(f"Searching for predict_skeleton.npz in {work_dir}...")
             possible_locations = list(work_dir.rglob("predict_skeleton.npz"))
+            
+            # Also check if it might be in a path derived from the full input path
+            # (run.py's get_files uses the full input path as the folder name)
+            input_derived_dir = Path(str(input_file).rsplit('.', 1)[0])
+            if input_derived_dir.exists():
+                alt_npz = input_derived_dir / "predict_skeleton.npz"
+                if alt_npz.exists() and alt_npz not in possible_locations:
+                    possible_locations.append(alt_npz)
+            
             if possible_locations:
-                print(f"Found predict_skeleton.npz at: {possible_locations[0]}")
+                print(f"Found predict_skeleton.npz at: {possible_locations}")
+                # Copy to expected location so skin prediction can find it
+                skeleton_npz.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(possible_locations[0], skeleton_npz)
+                print(f"Copied to: {skeleton_npz}")
             else:
+                # List all files in work_dir for debugging
+                print(f"Contents of {work_dir}:")
+                for f in work_dir.rglob("*"):
+                    if f.is_file():
+                        print(f"  {f}")
                 raise RuntimeError(f"Skeleton prediction did not create predict_skeleton.npz")
         else:
             print(f"Skeleton NPZ created: {skeleton_npz}")
