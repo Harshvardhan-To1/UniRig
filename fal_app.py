@@ -366,18 +366,30 @@ class UniRig(
     
     def _check_flash_attention(self) -> None:
         """Check if flash attention is available and configure accordingly."""
+        # Always patch to use SDPA because:
+        # 1. Flash Attention 2 requires float16/bfloat16 but model config uses float32
+        # 2. SDPA is built into PyTorch and works with any dtype
+        # 3. This avoids dtype compatibility issues
+        print("Patching model config to use SDPA attention (compatible with float32)...")
+        self._patch_model_config_for_sdpa()
+        
+        # Check flash_attn availability for logging purposes
         try:
             import flash_attn
-            print(f"Flash attention available: version {flash_attn.__version__}")
+            print(f"Flash attention is available (version {flash_attn.__version__}) but using SDPA for dtype compatibility")
             self.flash_attn_available = True
-        except ImportError as e:
-            print(f"Warning: Flash attention not available: {e}")
-            print("Attempting to modify model config to use sdpa attention instead...")
+        except ImportError:
+            print("Flash attention not installed, using SDPA")
             self.flash_attn_available = False
-            self._patch_model_config_for_sdpa()
     
     def _patch_model_config_for_sdpa(self) -> None:
-        """Patch model config to use SDPA instead of flash attention if flash_attn is unavailable."""
+        """Patch model config to use SDPA instead of flash attention.
+        
+        This is necessary because:
+        - Flash Attention 2 only supports float16/bfloat16
+        - The model config uses float32
+        - SDPA (Scaled Dot Product Attention) works with any dtype
+        """
         import yaml
         
         model_config_path = Path(self.repo_dir) / "configs/model/unirig_ar_350m_1024_81920_float32.yaml"
@@ -394,7 +406,10 @@ class UniRig(
                     with open(model_config_path, 'w') as f:
                         yaml.dump(config, f, default_flow_style=False)
                     
-                    print("Model config patched to use SDPA attention")
+                    print("Model config patched: flash_attention_2 -> sdpa")
+                else:
+                    current_impl = config.get('llm', {}).get('_attn_implementation', 'not set')
+                    print(f"Model config attention implementation: {current_impl}")
             except Exception as e:
                 print(f"Warning: Could not patch model config: {e}")
 
