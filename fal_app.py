@@ -16,11 +16,10 @@ Model: https://huggingface.co/VAST-AI/UniRig
 
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Dict, Any, Optional
 
 import fal
 from fal.exceptions import FieldException
@@ -68,7 +67,7 @@ def safe_hf_download(
         except Exception as e:
             last_error = e
             if attempt < max_retries - 1:
-                wait_time = 4 * (2 ** attempt)  # 4s, 8s, 16s
+                wait_time = 4 * (2 ** attempt)
                 print(f"Download attempt {attempt + 1} failed: {e}, retrying in {wait_time}s...")
                 time.sleep(wait_time)
     
@@ -98,7 +97,7 @@ class UniRigInput(BaseModel):
         default=DEFAULT_FACES_TARGET_COUNT,
         ge=1000,
         le=200000,
-        description="Target number of faces for mesh simplification (used for processing large meshes).",
+        description="Target number of faces for mesh simplification.",
     )
 
 
@@ -107,14 +106,10 @@ class SkeletonOnlyInput(BaseModel):
     
     mesh_file: str = Field(
         description="URL to the input 3D mesh file (supports .obj, .fbx, .glb, .gltf, .vrm, .dae)",
-        examples=[
-            "https://example.com/model.glb",
-        ],
     )
     seed: int | None = Field(
         default=None,
         description="Random seed for reproducible skeleton generation.",
-        examples=[42, 12345],
     )
     output_format: OUTPUT_FORMAT_LITERAL = Field(
         default=DEFAULT_OUTPUT_FORMAT,
@@ -133,16 +128,10 @@ class SkinOnlyInput(BaseModel):
     
     mesh_file: str = Field(
         description="URL to the input 3D mesh file with skeleton (typically .fbx from skeleton endpoint)",
-        examples=[
-            "https://example.com/model_with_skeleton.fbx",
-        ],
     )
     original_mesh_file: str | None = Field(
         default=None,
-        description="URL to the original mesh file to merge textures/materials from. If not provided, uses mesh_file.",
-        examples=[
-            "https://example.com/original_model.glb",
-        ],
+        description="URL to the original mesh file to merge textures/materials from.",
     )
     output_format: OUTPUT_FORMAT_LITERAL = Field(
         default=DEFAULT_OUTPUT_FORMAT,
@@ -168,7 +157,6 @@ class UniRigOutput(BaseModel):
     )
     seed: int = Field(
         description="Seed used for generation.",
-        examples=[42],
     )
 
 
@@ -176,7 +164,7 @@ class SkeletonOutput(BaseModel):
     """Output schema for skeleton-only prediction."""
     
     skeleton_file: File = Field(
-        description="The predicted skeleton file (FBX or GLB format).",
+        description="The predicted skeleton file.",
     )
     seed: int = Field(
         description="Seed used for generation.",
@@ -213,19 +201,15 @@ class UniRig(
     num_gpus = 1
 
     requirements = [
-        # PyTorch - must be installed first with correct CUDA version
+        # Core ML dependencies
         "torch==2.5.1+cu124",
         "torchvision==0.20.1+cu124",
-        # Core ML dependencies
         "transformers==4.51.3",
         "huggingface_hub>=0.20.0",
         "lightning>=2.0.0",
         "pytorch_lightning>=2.0.0",
-        # Flash attention - install from wheel for compatibility
-        # Note: flash_attn requires specific CUDA toolkit, may need to be built from source
-        "flash-attn>=2.5.0",
-        "packaging",
-        "ninja",
+        # Flash attention
+        "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.5cxx11abiFALSE-cp311-cp311-linux_x86_64.whl",
         # 3D processing
         "trimesh>=4.0.0",
         "open3d>=0.18.0",
@@ -246,28 +230,27 @@ class UniRig(
         "PyYAML>=6.0",
         "psutil>=5.9.0",
         # PyTorch Geometric dependencies
-        "torch_scatter",
-        "torch_cluster",
+        "https://data.pyg.org/whl/torch-2.5.0%2Bcu124/torch_cluster-1.6.3%2Bpt25cu124-cp311-cp311-linux_x86_64.whl",
+        "https://data.pyg.org/whl/torch-2.5.0%2Bcu124/torch_scatter-2.1.2%2Bpt25cu124-cp311-cp311-linux_x86_64.whl",
         # Spconv for sparse convolutions
         "spconv-cu124>=2.3.0",
         # Extra index URLs
         "--extra-index-url",
         "https://download.pytorch.org/whl/cu124",
-        "--extra-index-url",
-        "https://data.pyg.org/whl/torch-2.5.0+cu124.html",
     ]
 
     GITHUB_REPO = "VAST-AI-Research/UniRig"
     GITHUB_COMMIT = "main"
     HF_REPO_ID = "VAST-AI/UniRig"
     
-    # Model checkpoint paths in HuggingFace repo
     SKELETON_CKPT = "skeleton/articulation-xl_quantization_256/model.ckpt"
     SKIN_CKPT = "skin/articulation-xl/model.ckpt"
 
     async def setup(self) -> None:
         """Initialize the UniRig models and environment."""
         import torch
+        import yaml
+        from box import Box
         
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
@@ -288,154 +271,161 @@ class UniRig(
         if self.repo_dir not in sys.path:
             sys.path.insert(0, self.repo_dir)
         
-        # Download model checkpoints from HuggingFace with retry logic
+        os.chdir(self.repo_dir)
+        
+        # Download model checkpoints
         print("Downloading model checkpoints from HuggingFace...")
         weights_dir = Path(FAL_MODEL_WEIGHTS_DIR) / "unirig"
         weights_dir.mkdir(parents=True, exist_ok=True)
         
-        # Download skeleton model checkpoint
         self.skeleton_ckpt_path = safe_hf_download(
             repo_id=self.HF_REPO_ID,
             filename=self.SKELETON_CKPT,
             local_dir=str(weights_dir),
         )
-        print(f"Skeleton checkpoint downloaded: {self.skeleton_ckpt_path}")
+        print(f"Skeleton checkpoint: {self.skeleton_ckpt_path}")
         
-        # Download skin model checkpoint
         self.skin_ckpt_path = safe_hf_download(
             repo_id=self.HF_REPO_ID,
             filename=self.SKIN_CKPT,
             local_dir=str(weights_dir),
         )
-        print(f"Skin checkpoint downloaded: {self.skin_ckpt_path}")
-        
-        # Set up symlinks so the default checkpoint paths in configs work
-        experiments_dir = Path(self.repo_dir) / "experiments"
-        experiments_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Symlink skeleton checkpoint
-        skeleton_exp_dir = experiments_dir / "skeleton" / "articulation-xl_quantization_256"
-        skeleton_exp_dir.mkdir(parents=True, exist_ok=True)
-        skeleton_ckpt_link = skeleton_exp_dir / "model.ckpt"
-        if not skeleton_ckpt_link.exists() and not skeleton_ckpt_link.is_symlink():
-            skeleton_ckpt_link.symlink_to(self.skeleton_ckpt_path)
-        
-        # Symlink skin checkpoint
-        skin_exp_dir = experiments_dir / "skin" / "articulation-xl"
-        skin_exp_dir.mkdir(parents=True, exist_ok=True)
-        skin_ckpt_link = skin_exp_dir / "model.ckpt"
-        if not skin_ckpt_link.exists() and not skin_ckpt_link.is_symlink():
-            skin_ckpt_link.symlink_to(self.skin_ckpt_path)
+        print(f"Skin checkpoint: {self.skin_ckpt_path}")
         
         # Configure PyTorch
         torch.set_grad_enabled(False)
         torch.set_float32_matmul_precision('high')
         
-        # Store config paths for later use
-        self.skeleton_task_config = "configs/task/quick_inference_skeleton_articulationxl_ar_256.yaml"
-        self.skin_task_config = "configs/task/quick_inference_unirig_skin.yaml"
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device}")
         
-        # Verify configs exist
-        os.chdir(self.repo_dir)
-        if not os.path.exists(self.skeleton_task_config):
-            raise RuntimeError(f"Skeleton config not found: {self.skeleton_task_config}")
-        if not os.path.exists(self.skin_task_config):
-            raise RuntimeError(f"Skin config not found: {self.skin_task_config}")
+        # Load configurations
+        print("Loading model configurations...")
+        self._load_configs()
         
-        # Warm up by importing necessary modules
-        print("Importing UniRig modules...")
-        self._import_modules()
+        # Load models
+        print("Loading skeleton model...")
+        self._load_skeleton_model()
+        
+        print("Loading skin model...")
+        self._load_skin_model()
         
         print("UniRig setup complete!")
 
-    def _import_modules(self) -> None:
-        """Import UniRig modules to warm up the system."""
-        os.chdir(self.repo_dir)
-        
-        # Check flash attention availability
-        self._check_flash_attention()
-        
-        try:
-            from src.data.extract import clean_bpy, load, process_mesh, get_arranged_bones, process_armature, save_raw_data
-            from src.inference.merge import transfer, clean_bpy as merge_clean_bpy
-            import bpy
-            # Clear any existing scene
-            clean_bpy()
-        except ImportError as e:
-            print(f"Warning: Could not import some modules: {e}")
-    
-    def _check_flash_attention(self) -> None:
-        """Check if flash attention is available and configure accordingly."""
-        # Always patch to use SDPA because:
-        # 1. Flash Attention 2 requires float16/bfloat16 but model config uses float32
-        # 2. SDPA is built into PyTorch and works with any dtype
-        # 3. This avoids dtype compatibility issues
-        print("Patching model config to use SDPA attention (compatible with float32)...")
-        self._patch_model_config_for_sdpa()
-        
-        # Check flash_attn availability for logging purposes
-        try:
-            import flash_attn
-            print(f"Flash attention is available (version {flash_attn.__version__}) but using SDPA for dtype compatibility")
-            self.flash_attn_available = True
-        except ImportError:
-            print("Flash attention not installed, using SDPA")
-            self.flash_attn_available = False
-    
-    def _patch_model_config_for_sdpa(self) -> None:
-        """Patch model config to use SDPA instead of flash attention.
-        
-        This is necessary because:
-        - Flash Attention 2 only supports float16/bfloat16
-        - The model config uses float32
-        - SDPA (Scaled Dot Product Attention) works with any dtype
-        """
+    def _load_yaml(self, path: str) -> Box:
+        """Load a YAML config file."""
         import yaml
+        from box import Box
+        full_path = os.path.join(self.repo_dir, path)
+        return Box(yaml.safe_load(open(full_path, 'r')))
+
+    def _load_configs(self) -> None:
+        """Load all required configurations."""
+        from src.tokenizer.spec import TokenizerConfig
+        from src.data.transform import TransformConfig
+        from src.data.order import OrderConfig
         
-        model_config_path = Path(self.repo_dir) / "configs/model/unirig_ar_350m_1024_81920_float32.yaml"
+        # Skeleton model configs
+        self.skeleton_tokenizer_config = TokenizerConfig.parse(
+            self._load_yaml("configs/tokenizer/tokenizer_parts_articulationxl_256.yaml")
+        )
+        self.skeleton_transform_config = TransformConfig.parse(
+            self._load_yaml("configs/transform/inference_ar_transform.yaml").get('predict_transform_config', {})
+        )
+        self.skeleton_model_config = self._load_yaml("configs/model/unirig_ar_350m_1024_81920_float32.yaml")
+        self.skeleton_system_config = self._load_yaml("configs/system/ar_inference_articulationxl.yaml")
         
-        if model_config_path.exists():
-            try:
-                with open(model_config_path, 'r') as f:
-                    config = yaml.safe_load(f)
-                
-                # Change flash_attention_2 to sdpa (Scaled Dot Product Attention)
-                if config.get('llm', {}).get('_attn_implementation') == 'flash_attention_2':
-                    config['llm']['_attn_implementation'] = 'sdpa'
-                    
-                    with open(model_config_path, 'w') as f:
-                        yaml.dump(config, f, default_flow_style=False)
-                    
-                    print("Model config patched: flash_attention_2 -> sdpa")
-                else:
-                    current_impl = config.get('llm', {}).get('_attn_implementation', 'not set')
-                    print(f"Model config attention implementation: {current_impl}")
-            except Exception as e:
-                print(f"Warning: Could not patch model config: {e}")
+        # Skin model configs
+        self.skin_transform_config = TransformConfig.parse(
+            self._load_yaml("configs/transform/inference_skin_transform.yaml").get('predict_transform_config', {})
+        )
+        self.skin_model_config = self._load_yaml("configs/model/unirig_skin.yaml")
+
+    def _load_skeleton_model(self) -> None:
+        """Load the skeleton prediction model."""
+        import torch
+        from src.tokenizer.parse import get_tokenizer
+        from src.model.parse import get_model
+        from src.system.ar import ARSystem
+        from src.data.order import get_order
+        
+        # Create tokenizer
+        self.skeleton_tokenizer = get_tokenizer(config=self.skeleton_tokenizer_config)
+        
+        # Create model
+        model_kwargs = dict(self.skeleton_model_config)
+        model_kwargs['tokenizer'] = self.skeleton_tokenizer
+        self.skeleton_model = get_model(**model_kwargs)
+        
+        # Load checkpoint
+        checkpoint = torch.load(self.skeleton_ckpt_path, map_location=self.device)
+        
+        # Extract model state dict from Lightning checkpoint
+        if 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+            # Remove 'model.' prefix if present
+            state_dict = {k.replace('model.', ''): v for k, v in state_dict.items()}
+        else:
+            state_dict = checkpoint
+        
+        self.skeleton_model.load_state_dict(state_dict, strict=False)
+        self.skeleton_model.to(self.device)
+        self.skeleton_model.eval()
+        
+        # Get generation kwargs from system config
+        self.skeleton_generate_kwargs = dict(self.skeleton_system_config.get('generate_kwargs', {}))
+        
+        # Get order for name generation
+        if self.skeleton_transform_config.order_config is not None:
+            self.skeleton_order = get_order(config=self.skeleton_transform_config.order_config)
+        else:
+            self.skeleton_order = None
+        
+        print(f"Skeleton model loaded on {self.device}")
+
+    def _load_skin_model(self) -> None:
+        """Load the skin prediction model."""
+        import torch
+        from src.model.parse import get_model
+        
+        # Create model
+        model_kwargs = dict(self.skin_model_config)
+        self.skin_model = get_model(**model_kwargs)
+        
+        # Load checkpoint
+        checkpoint = torch.load(self.skin_ckpt_path, map_location=self.device)
+        
+        if 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+            state_dict = {k.replace('model.', ''): v for k, v in state_dict.items()}
+        else:
+            state_dict = checkpoint
+        
+        self.skin_model.load_state_dict(state_dict, strict=False)
+        self.skin_model.to(self.device)
+        self.skin_model.eval()
+        
+        print(f"Skin model loaded on {self.device}")
 
     def _download_input_file(self, url: str, work_dir: Path) -> Path:
         """Download input file from URL."""
         import requests
         
-        # Determine filename from URL
-        url_path = url.split("?")[0]  # Remove query params
+        url_path = url.split("?")[0]
         filename = os.path.basename(url_path)
         
         if not filename or "." not in filename:
-            # Generate a filename if URL doesn't have one
             filename = "input_mesh.glb"
         
-        # Validate format
         ext = filename.split(".")[-1].lower()
         if ext not in SUPPORTED_FORMATS:
             raise FieldException(
                 "mesh_file",
-                f"Unsupported format: .{ext}. Supported formats: {', '.join(SUPPORTED_FORMATS)}",
+                f"Unsupported format: .{ext}. Supported: {', '.join(SUPPORTED_FORMATS)}",
             )
         
         local_path = work_dir / filename
         
-        # Download the file
         response = requests.get(url, stream=True, timeout=300)
         response.raise_for_status()
         
@@ -451,13 +441,16 @@ class UniRig(
     def _extract_mesh(
         self,
         input_file: Path,
-        output_dir: Path,
         faces_target_count: int,
-    ) -> Path:
-        """Extract and simplify mesh from input file using Blender."""
+    ) -> 'RawData':
+        """Extract and process mesh from input file."""
         os.chdir(self.repo_dir)
         
-        from src.data.extract import clean_bpy, load, process_mesh, get_arranged_bones, process_armature, save_raw_data
+        from src.data.extract import clean_bpy, load, process_mesh, get_arranged_bones, process_armature
+        from src.data.raw_data import RawData
+        import numpy as np
+        import trimesh
+        import fast_simplification
         
         clean_bpy()
         
@@ -478,209 +471,156 @@ class UniRig(
         else:
             joints, tails, parents, names, matrix_local = None, None, None, None, None
         
-        output_dir.mkdir(parents=True, exist_ok=True)
-        npz_path = output_dir / "raw_data.npz"
+        # Simplify mesh if needed
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces - 1)  # 1-indexed to 0-indexed
+        vertices = np.array(mesh.vertices, dtype=np.float32)
+        faces = np.array(mesh.faces, dtype=np.int64)
         
-        save_raw_data(
-            path=str(npz_path),
-            vertices=vertices,
-            faces=faces - 1,  # Blender uses 1-based indexing
-            skin=skin,
-            joints=joints,
+        if faces.shape[0] > faces_target_count:
+            vertices, faces = fast_simplification.simplify(vertices, faces, target_count=faces_target_count)
+            mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+        
+        raw_data = RawData(
+            vertices=np.array(mesh.vertices, dtype=np.float32),
+            vertex_normals=np.array(mesh.vertex_normals, dtype=np.float32),
+            faces=np.array(mesh.faces, dtype=np.int64),
+            face_normals=np.array(mesh.face_normals, dtype=np.float32),
+            joints=np.array(joints, dtype=np.float32) if joints is not None else None,
             tails=tails,
+            skin=np.array(skin, dtype=np.float32) if skin is not None else None,
+            no_skin=None,
             parents=parents,
             names=names,
             matrix_local=matrix_local,
-            target_count=faces_target_count,
         )
         
-        return output_dir
+        return raw_data
 
-    def _run_skeleton_prediction(
+    def _predict_skeleton(
         self,
-        input_file: Path,
-        npz_dir: Path,
-        output_file: Path,
+        raw_data: 'RawData',
         seed: int,
-    ) -> Path:
-        """Run skeleton prediction using the AR model."""
-        os.chdir(self.repo_dir)
+    ) -> 'RawData':
+        """Run skeleton prediction on the mesh."""
+        import torch
+        import numpy as np
+        import lightning as L
+        from src.data.asset import Asset
+        from src.data.transform import transform_asset
+        from src.data.raw_data import RawData, RawSkeleton
         
-        # IMPORTANT: Do NOT pass --output to avoid user_mode=True
-        # When user_mode=True, the NPZ files (predict_skeleton.npz) are NOT saved,
-        # which breaks the skin prediction phase.
-        # Instead, let it output to the default location and we'll find/copy the files.
-        cmd = [
-            sys.executable, "run.py",
-            f"--task={self.skeleton_task_config}",
-            f"--seed={seed}",
-            f"--input={input_file}",
-            f"--npz_dir={npz_dir}",
-            f"--output_dir={output_file.parent}",  # Use output_dir instead of output
-        ]
+        L.seed_everything(seed, workers=True)
         
-        env = os.environ.copy()
-        env["PYTHONPATH"] = self.repo_dir + ":" + env.get("PYTHONPATH", "")
-        # Ensure flash attention can find CUDA
-        env["CUDA_HOME"] = env.get("CUDA_HOME", "/usr/local/cuda")
+        # Create asset from raw data
+        asset = Asset.from_raw_data(raw_data=raw_data, tokenizer=self.skeleton_tokenizer)
         
-        print(f"Running skeleton prediction: {' '.join(cmd)}")
+        # Apply transforms
+        transform_asset(asset=asset, transform_config=self.skeleton_transform_config)
         
-        result = subprocess.run(
-            cmd,
-            cwd=self.repo_dir,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=600,
+        # Prepare input tensors
+        vertices = torch.from_numpy(asset.sampled_vertices).float().to(self.device)
+        normals = torch.from_numpy(asset.sampled_normals).float().to(self.device)
+        
+        # Run inference
+        with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
+            result = self.skeleton_model.generate(
+                vertices=vertices,
+                normals=normals,
+                cls=None,
+                **self.skeleton_generate_kwargs,
+            )
+        
+        # Create skeleton from result
+        skeleton = RawSkeleton.from_detokenize_output(res=result, order=self.skeleton_order)
+        
+        # Create new RawData with skeleton
+        skeleton_data = RawData(
+            vertices=raw_data.vertices,
+            vertex_normals=raw_data.vertex_normals,
+            faces=raw_data.faces,
+            face_normals=raw_data.face_normals,
+            joints=skeleton.joints,
+            tails=skeleton.tails,
+            skin=None,
+            no_skin=skeleton.no_skin,
+            parents=skeleton.parents,
+            names=skeleton.names,
+            matrix_local=None,
+            cls=result.cls,
         )
         
-        if result.returncode != 0:
-            # Capture full error for debugging
-            full_error = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
-            print(f"Skeleton prediction error:\n{full_error}")
-            
-            # Extract the most relevant error message
-            error_msg = result.stderr or result.stdout or "Unknown error"
-            # Get last 1000 chars which usually contain the actual error
-            error_msg = error_msg[-1000:] if len(error_msg) > 1000 else error_msg
-            raise RuntimeError(f"Skeleton prediction failed: {error_msg}")
-        
-        print(f"Skeleton prediction completed, searching for output files...")
-        
-        # Find the skeleton FBX file
-        # With output_dir set, it should be at: output_dir/model_name/skeleton.fbx
-        model_name = input_file.stem
-        expected_fbx = output_file.parent / model_name / "skeleton.fbx"
-        
-        if expected_fbx.exists():
-            # Copy to the expected output location
-            shutil.copy(expected_fbx, output_file)
-            print(f"Found skeleton FBX at {expected_fbx}, copied to {output_file}")
-            return output_file
-        
-        # Search more broadly
-        possible_outputs = list(output_file.parent.rglob("*skeleton*.fbx"))
-        if not possible_outputs:
-            possible_outputs = list(npz_dir.rglob("*skeleton*.fbx"))
-        
-        if possible_outputs:
-            found_fbx = possible_outputs[0]
-            shutil.copy(found_fbx, output_file)
-            print(f"Found skeleton FBX at {found_fbx}, copied to {output_file}")
-            return output_file
-        
-        # List files for debugging
-        print(f"Could not find skeleton FBX. Contents of {output_file.parent}:")
-        for f in output_file.parent.rglob("*"):
-            if f.is_file():
-                print(f"  {f}")
-        print(f"Contents of {npz_dir}:")
-        for f in npz_dir.rglob("*"):
-            if f.is_file():
-                print(f"  {f}")
-        
-        raise RuntimeError("Skeleton prediction did not produce FBX output file")
+        return skeleton_data
 
-    def _run_skin_prediction(
+    def _predict_skin(
         self,
-        input_file: Path,
-        npz_dir: Path,
-        output_file: Path,
-    ) -> Path:
-        """Run skin prediction using the skin model."""
-        os.chdir(self.repo_dir)
+        raw_data: 'RawData',
+    ) -> 'RawData':
+        """Run skin prediction on mesh with skeleton."""
+        import torch
+        import numpy as np
+        from src.data.asset import Asset
+        from src.data.transform import transform_asset
+        from src.data.raw_data import RawData, RawSkin
         
-        # Use output_dir instead of output to avoid user_mode issues
-        cmd = [
-            sys.executable, "run.py",
-            f"--task={self.skin_task_config}",
-            f"--input={input_file}",
-            f"--npz_dir={npz_dir}",
-            f"--output_dir={output_file.parent}",
-            "--data_name=predict_skeleton.npz",
-        ]
+        # Create asset
+        asset = Asset.from_raw_data(raw_data=raw_data, tokenizer=None)
         
-        env = os.environ.copy()
-        env["PYTHONPATH"] = self.repo_dir + ":" + env.get("PYTHONPATH", "")
-        env["CUDA_HOME"] = env.get("CUDA_HOME", "/usr/local/cuda")
+        # Apply transforms
+        transform_asset(asset=asset, transform_config=self.skin_transform_config)
         
-        print(f"Running skin prediction: {' '.join(cmd)}")
+        # Prepare batch
+        batch = {
+            'vertices': torch.from_numpy(asset.sampled_vertices).float().unsqueeze(0).to(self.device),
+            'normals': torch.from_numpy(asset.sampled_normals).float().unsqueeze(0).to(self.device),
+            'joints': torch.from_numpy(raw_data.joints).float().unsqueeze(0).to(self.device),
+            'tails': torch.from_numpy(raw_data.tails).float().unsqueeze(0).to(self.device),
+            'num_bones': torch.tensor([len(raw_data.joints)]).to(self.device),
+            'path': ['inference'],
+            'cls': [raw_data.cls if hasattr(raw_data, 'cls') and raw_data.cls else 'unknown'],
+        }
         
-        result = subprocess.run(
-            cmd,
-            cwd=self.repo_dir,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=600,
+        # Add vertex groups if present
+        if hasattr(asset, 'vertex_groups') and asset.vertex_groups:
+            for key, value in asset.vertex_groups.items():
+                if isinstance(value, np.ndarray):
+                    batch[key] = torch.from_numpy(value).float().unsqueeze(0).to(self.device)
+        
+        # Run inference
+        with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
+            result = self.skin_model.predict_step(batch)
+        
+        # Extract skin weights
+        if isinstance(result, dict) and 'skin' in result:
+            skin = result['skin'].cpu().numpy()[0]
+        elif isinstance(result, np.ndarray):
+            skin = result
+        else:
+            skin = result[0] if isinstance(result, (list, tuple)) else result
+            if hasattr(skin, 'cpu'):
+                skin = skin.cpu().numpy()
+        
+        # Create output with skin
+        skinned_data = RawData(
+            vertices=raw_data.vertices,
+            vertex_normals=raw_data.vertex_normals,
+            faces=raw_data.faces,
+            face_normals=raw_data.face_normals,
+            joints=raw_data.joints,
+            tails=raw_data.tails,
+            skin=skin,
+            no_skin=raw_data.no_skin if hasattr(raw_data, 'no_skin') else None,
+            parents=raw_data.parents,
+            names=raw_data.names,
+            matrix_local=raw_data.matrix_local if hasattr(raw_data, 'matrix_local') else None,
         )
         
-        if result.returncode != 0:
-            # Capture full error for debugging
-            full_error = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
-            print(f"Skin prediction error:\n{full_error}")
-            
-            error_msg = result.stderr or result.stdout or "Unknown error"
-            error_msg = error_msg[-1000:] if len(error_msg) > 1000 else error_msg
-            raise RuntimeError(f"Skin prediction failed: {error_msg}")
-        
-        print(f"Skin prediction completed, searching for output files...")
-        
-        # Find the skinned FBX file
-        model_name = input_file.stem
-        expected_fbx = output_file.parent / model_name / "result_fbx.fbx"
-        
-        if expected_fbx.exists():
-            shutil.copy(expected_fbx, output_file)
-            print(f"Found skinned FBX at {expected_fbx}, copied to {output_file}")
-            return output_file
-        
-        # Search more broadly
-        possible_outputs = (
-            list(output_file.parent.rglob("*result_fbx*.fbx")) +
-            list(output_file.parent.rglob("*skin*.fbx")) +
-            list(npz_dir.rglob("*result_fbx*.fbx"))
-        )
-        
-        if possible_outputs:
-            found_fbx = possible_outputs[0]
-            shutil.copy(found_fbx, output_file)
-            print(f"Found skinned FBX at {found_fbx}, copied to {output_file}")
-            return output_file
-        
-        # List files for debugging
-        print(f"Could not find skinned FBX. Contents of {output_file.parent}:")
-        for f in output_file.parent.rglob("*"):
-            if f.is_file():
-                print(f"  {f}")
-        
-        raise RuntimeError("Skin prediction did not produce output file")
+        return skinned_data
 
-    def _merge_with_original(
-        self,
-        source_file: Path,
-        target_file: Path,
-        output_file: Path,
-    ) -> Path:
-        """Merge predicted skeleton/skin with original mesh to preserve textures."""
-        os.chdir(self.repo_dir)
-        
-        from src.inference.merge import transfer
-        
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        
-        transfer(
-            source=str(source_file),
-            target=str(target_file),
-            output=str(output_file),
-            add_root=False,
-        )
-        
-        if not output_file.exists():
-            raise RuntimeError("Merge operation did not produce output file")
-        
-        return output_file
+    def _export_fbx(self, raw_data: 'RawData', output_path: Path) -> Path:
+        """Export RawData to FBX file."""
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_data.export_fbx(path=str(output_path), use_tail=True)
+        return output_path
 
     def _convert_to_glb(self, fbx_file: Path) -> Path:
         """Convert FBX to GLB format using Blender."""
@@ -688,118 +628,35 @@ class UniRig(
         from src.data.extract import clean_bpy
         
         clean_bpy()
-        
-        # Import FBX
         bpy.ops.import_scene.fbx(filepath=str(fbx_file), ignore_leaf_bones=False)
         
-        # Export as GLB
         glb_file = fbx_file.with_suffix(".glb")
         bpy.ops.export_scene.gltf(filepath=str(glb_file))
         
         return glb_file
 
-    def _run_full_pipeline(
+    def _merge_with_original(
         self,
-        input_file: Path,
-        work_dir: Path,
-        seed: int,
-        faces_target_count: int,
-        output_format: str,
-    ) -> tuple[Path, Path]:
-        """Run the complete skeleton + skin pipeline."""
+        skinned_data: 'RawData',
+        original_file: Path,
+        output_path: Path,
+    ) -> Path:
+        """Merge skeleton/skin with original mesh to preserve textures."""
+        os.chdir(self.repo_dir)
+        from src.inference.merge import merge
         
-        # UniRig's run.py expects npz files to be at: npz_dir/model_name/raw_data.npz
-        # where model_name is the stem of the input file
-        # The npz_dir is passed to run.py via --npz_dir argument
-        npz_dir = work_dir  # Use work_dir directly as npz_dir base
-        output_dir = work_dir / "output"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        model_name = input_file.stem
-        model_npz_dir = npz_dir / model_name
-        
-        print(f"Extracting mesh to: {model_npz_dir}")
-        
-        # Step 1: Extract mesh to NPZ format
-        # This creates: npz_dir/model_name/raw_data.npz
-        self._extract_mesh(input_file, model_npz_dir, faces_target_count)
-        
-        # Verify the npz file was created
-        expected_npz = model_npz_dir / "raw_data.npz"
-        if not expected_npz.exists():
-            raise RuntimeError(f"Mesh extraction failed: {expected_npz} not found")
-        print(f"NPZ file created: {expected_npz}")
-        
-        # Step 2: Run skeleton prediction
-        # This creates: npz_dir/model_name/predict_skeleton.npz (for skin phase)
-        #               and output skeleton.fbx
-        skeleton_output = output_dir / "skeleton.fbx"
-        skeleton_file = self._run_skeleton_prediction(
-            input_file=input_file,
-            npz_dir=npz_dir,
-            output_file=skeleton_output,
-            seed=seed,
+        merge(
+            path=str(original_file),
+            output_path=str(output_path),
+            vertices=skinned_data.vertices,
+            joints=skinned_data.joints,
+            skin=skinned_data.skin,
+            parents=skinned_data.parents,
+            names=skinned_data.names,
+            tails=skinned_data.tails,
         )
         
-        # Verify skeleton npz was created (needed for skin phase)
-        skeleton_npz = model_npz_dir / "predict_skeleton.npz"
-        if not skeleton_npz.exists():
-            print(f"predict_skeleton.npz not found at expected location: {skeleton_npz}")
-            
-            # Search for it in all possible locations
-            print(f"Searching for predict_skeleton.npz in {work_dir}...")
-            possible_locations = list(work_dir.rglob("predict_skeleton.npz"))
-            
-            # Also check if it might be in a path derived from the full input path
-            # (run.py's get_files uses the full input path as the folder name)
-            input_derived_dir = Path(str(input_file).rsplit('.', 1)[0])
-            if input_derived_dir.exists():
-                alt_npz = input_derived_dir / "predict_skeleton.npz"
-                if alt_npz.exists() and alt_npz not in possible_locations:
-                    possible_locations.append(alt_npz)
-            
-            if possible_locations:
-                print(f"Found predict_skeleton.npz at: {possible_locations}")
-                # Copy to expected location so skin prediction can find it
-                skeleton_npz.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy(possible_locations[0], skeleton_npz)
-                print(f"Copied to: {skeleton_npz}")
-            else:
-                # List all files in work_dir for debugging
-                print(f"Contents of {work_dir}:")
-                for f in work_dir.rglob("*"):
-                    if f.is_file():
-                        print(f"  {f}")
-                raise RuntimeError(f"Skeleton prediction did not create predict_skeleton.npz")
-        else:
-            print(f"Skeleton NPZ created: {skeleton_npz}")
-        
-        # Step 3: Run skin prediction
-        # IMPORTANT: Use the ORIGINAL input file path, not the skeleton FBX!
-        # run.py uses the input path to locate predict_skeleton.npz:
-        #   npz_dir / input_stem / predict_skeleton.npz
-        skinned_output = output_dir / "skinned.fbx"
-        skinned_file = self._run_skin_prediction(
-            input_file=input_file,  # Use original input, NOT skeleton_file
-            npz_dir=npz_dir,
-            output_file=skinned_output,
-        )
-        
-        # Step 4: Merge with original mesh to preserve textures/materials
-        merged_fbx = output_dir / "rigged.fbx"
-        final_fbx = self._merge_with_original(
-            source_file=skinned_file,
-            target_file=input_file,
-            output_file=merged_fbx,
-        )
-        
-        # Step 5: Convert format if needed
-        if output_format == "glb":
-            final_output = self._convert_to_glb(final_fbx)
-        else:
-            final_output = final_fbx
-        
-        return final_output, skeleton_file
+        return output_path
 
     @fal.endpoint("/")
     def generate(
@@ -810,45 +667,48 @@ class UniRig(
     ) -> UniRigOutput:
         """
         Generate a fully rigged 3D model with skeleton and skinning weights.
-        
-        This is the main endpoint that performs the complete rigging pipeline:
-        1. Mesh extraction and simplification
-        2. Skeleton prediction using the autoregressive model
-        3. Skinning weight prediction using bone-point cross attention
-        4. Merging with original mesh to preserve textures/materials
-        
-        The generated skeleton is optimized for the mesh geometry and includes
-        proper bone hierarchy and naming. Skinning weights are automatically
-        computed for smooth deformation.
         """
         seed = get_seed(input.seed)
-        
-        # Create temporary working directory
         work_dir = Path(tempfile.mkdtemp(prefix="unirig_"))
         
         try:
+            os.chdir(self.repo_dir)
+            
             # Download input file
             input_file = self._download_input_file(input.mesh_file, work_dir)
             
-            # Run full pipeline
-            rigged_file, skeleton_file = self._run_full_pipeline(
-                input_file=input_file,
-                work_dir=work_dir,
-                seed=seed,
-                faces_target_count=input.faces_target_count,
-                output_format=input.output_format,
-            )
+            # Extract mesh
+            raw_data = self._extract_mesh(input_file, input.faces_target_count)
+            
+            # Predict skeleton
+            skeleton_data = self._predict_skeleton(raw_data, seed)
+            
+            # Export skeleton
+            skeleton_output = work_dir / "skeleton.fbx"
+            self._export_fbx(skeleton_data, skeleton_output)
+            
+            # Predict skin
+            skinned_data = self._predict_skin(skeleton_data)
+            
+            # Merge with original mesh
+            rigged_output = work_dir / "rigged.fbx"
+            self._merge_with_original(skinned_data, input_file, rigged_output)
+            
+            # Convert format if needed
+            if input.output_format == "glb":
+                rigged_output = self._convert_to_glb(rigged_output)
+                if skeleton_output.exists():
+                    skeleton_output = self._convert_to_glb(skeleton_output)
             
             response.headers["x-fal-billable-units"] = "1"
             
             return UniRigOutput(
-                rigged_file=File.from_path(str(rigged_file), request=request),
-                skeleton_file=File.from_path(str(skeleton_file), request=request) if skeleton_file.exists() else None,
+                rigged_file=File.from_path(str(rigged_output), request=request),
+                skeleton_file=File.from_path(str(skeleton_output), request=request) if skeleton_output.exists() else None,
                 seed=seed,
             )
             
         finally:
-            # Cleanup temporary files
             shutil.rmtree(work_dir, ignore_errors=True)
 
     @fal.endpoint("/skeleton")
@@ -858,53 +718,27 @@ class UniRig(
         request: Request,
         response: Response,
     ) -> SkeletonOutput:
-        """
-        Generate skeleton only (without skinning weights).
-        
-        Use this endpoint when you want to:
-        - Preview or manually edit the skeleton before skinning
-        - Use your own skinning solution
-        - Generate multiple skeleton variations with different seeds
-        - Inspect the predicted bone structure
-        
-        The output skeleton can be used as input to the /skin endpoint
-        after any desired manual adjustments.
-        """
+        """Generate skeleton only (without skinning weights)."""
         seed = get_seed(input.seed)
-        
         work_dir = Path(tempfile.mkdtemp(prefix="unirig_skeleton_"))
         
         try:
-            # Download input file
+            os.chdir(self.repo_dir)
+            
             input_file = self._download_input_file(input.mesh_file, work_dir)
+            raw_data = self._extract_mesh(input_file, input.faces_target_count)
+            skeleton_data = self._predict_skeleton(raw_data, seed)
             
-            # Use work_dir directly as npz_dir base (run.py expects: npz_dir/model_name/raw_data.npz)
-            npz_dir = work_dir
-            output_dir = work_dir / "output"
-            output_dir.mkdir(parents=True, exist_ok=True)
+            skeleton_output = work_dir / "skeleton.fbx"
+            self._export_fbx(skeleton_data, skeleton_output)
             
-            model_npz_dir = npz_dir / input_file.stem
-            
-            # Extract mesh
-            self._extract_mesh(input_file, model_npz_dir, input.faces_target_count)
-            
-            # Run skeleton prediction
-            skeleton_output = output_dir / "skeleton.fbx"
-            skeleton_file = self._run_skeleton_prediction(
-                input_file=input_file,
-                npz_dir=npz_dir,
-                output_file=skeleton_output,
-                seed=seed,
-            )
-            
-            # Convert format if needed
             if input.output_format == "glb":
-                skeleton_file = self._convert_to_glb(skeleton_file)
+                skeleton_output = self._convert_to_glb(skeleton_output)
             
             response.headers["x-fal-billable-units"] = "1"
             
             return SkeletonOutput(
-                skeleton_file=File.from_path(str(skeleton_file), request=request),
+                skeleton_file=File.from_path(str(skeleton_output), request=request),
                 seed=seed,
             )
             
@@ -918,28 +752,14 @@ class UniRig(
         request: Request,
         response: Response,
     ) -> SkinOutput:
-        """
-        Generate skinning weights for a mesh with existing skeleton.
-        
-        Use this endpoint when you:
-        - Have manually edited a skeleton from /skeleton endpoint
-        - Want to apply UniRig's skinning to your own skeleton
-        - Need to re-skin an existing rigged model with different weights
-        
-        Input requirements:
-        - mesh_file: Must be a file containing both mesh AND skeleton (e.g., FBX with armature)
-        - original_mesh_file (optional): Original mesh to merge textures/materials from
-        
-        The skinning algorithm uses bone-point cross attention to compute
-        smooth deformation weights based on mesh geometry and bone positions.
-        """
+        """Generate skinning weights for a mesh with existing skeleton."""
         work_dir = Path(tempfile.mkdtemp(prefix="unirig_skin_"))
         
         try:
-            # Download input file (mesh with skeleton)
+            os.chdir(self.repo_dir)
+            
             input_file = self._download_input_file(input.mesh_file, work_dir)
             
-            # Download original mesh if provided (for texture/material merging)
             if input.original_mesh_file:
                 original_dir = work_dir / "original"
                 original_dir.mkdir(parents=True, exist_ok=True)
@@ -947,41 +767,26 @@ class UniRig(
             else:
                 original_file = input_file
             
-            # Use work_dir directly as npz_dir base
-            npz_dir = work_dir
-            output_dir = work_dir / "output"
-            output_dir.mkdir(parents=True, exist_ok=True)
+            raw_data = self._extract_mesh(input_file, input.faces_target_count)
             
-            model_npz_dir = npz_dir / input_file.stem
+            if raw_data.joints is None:
+                raise FieldException("mesh_file", "Input file must contain a skeleton for skin prediction")
             
-            # Extract mesh with skeleton
-            self._extract_mesh(input_file, model_npz_dir, input.faces_target_count)
+            skinned_data = self._predict_skin(raw_data)
             
-            # Run skin prediction
-            skinned_output = output_dir / "skinned.fbx"
-            skinned_file = self._run_skin_prediction(
-                input_file=input_file,
-                npz_dir=npz_dir,
-                output_file=skinned_output,
-            )
+            skinned_output = work_dir / "skinned.fbx"
+            if input.original_mesh_file:
+                self._merge_with_original(skinned_data, original_file, skinned_output)
+            else:
+                self._export_fbx(skinned_data, skinned_output)
             
-            # Optionally merge with original to preserve textures
-            if input.original_mesh_file and original_file != input_file:
-                merged_output = output_dir / "merged.fbx"
-                skinned_file = self._merge_with_original(
-                    source_file=skinned_file,
-                    target_file=original_file,
-                    output_file=merged_output,
-                )
-            
-            # Convert format if needed
             if input.output_format == "glb":
-                skinned_file = self._convert_to_glb(skinned_file)
+                skinned_output = self._convert_to_glb(skinned_output)
             
             response.headers["x-fal-billable-units"] = "1"
             
             return SkinOutput(
-                skinned_file=File.from_path(str(skinned_file), request=request),
+                skinned_file=File.from_path(str(skinned_output), request=request),
             )
             
         finally:
@@ -993,12 +798,7 @@ class UniRig(
         request: Request,
         response: Response,
     ) -> HealthOutput:
-        """
-        Health check endpoint.
-        
-        Returns the service status, version information, and GPU availability.
-        Use this to verify the service is ready to accept requests.
-        """
+        """Health check endpoint."""
         import torch
         
         return HealthOutput(
