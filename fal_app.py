@@ -546,7 +546,12 @@ class UniRig(
         L.seed_everything(seed, workers=True)
         
         # Create asset from raw data
-        asset = Asset.from_raw_data(raw_data=raw_data, tokenizer=self.skeleton_tokenizer)
+        asset = Asset.from_raw_data(
+            raw_data=raw_data,
+            cls="unknown",
+            path="inference",
+            data_name="raw_data.npz",
+        )
         
         # Apply transforms
         transform_asset(asset=asset, transform_config=self.skeleton_transform_config)
@@ -597,7 +602,12 @@ class UniRig(
         from src.data.raw_data import RawData, RawSkin
         
         # Create asset
-        asset = Asset.from_raw_data(raw_data=raw_data, tokenizer=None)
+        asset = Asset.from_raw_data(
+            raw_data=raw_data,
+            cls=raw_data.cls if hasattr(raw_data, 'cls') and raw_data.cls else "unknown",
+            path="inference",
+            data_name="raw_data.npz",
+        )
         
         # Apply transforms
         transform_asset(asset=asset, transform_config=self.skin_transform_config)
