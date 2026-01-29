@@ -213,15 +213,19 @@ class UniRig(
     num_gpus = 1
 
     requirements = [
-        # Core ML dependencies
+        # PyTorch - must be installed first with correct CUDA version
         "torch==2.5.1+cu124",
         "torchvision==0.20.1+cu124",
+        # Core ML dependencies
         "transformers==4.51.3",
         "huggingface_hub>=0.20.0",
         "lightning>=2.0.0",
         "pytorch_lightning>=2.0.0",
-        # Flash attention
-        "flash_attn>=2.5.0",
+        # Flash attention - install from wheel for compatibility
+        # Note: flash_attn requires specific CUDA toolkit, may need to be built from source
+        "flash-attn>=2.5.0",
+        "packaging",
+        "ninja",
         # 3D processing
         "trimesh>=4.0.0",
         "open3d>=0.18.0",
@@ -347,6 +351,10 @@ class UniRig(
     def _import_modules(self) -> None:
         """Import UniRig modules to warm up the system."""
         os.chdir(self.repo_dir)
+        
+        # Check flash attention availability
+        self._check_flash_attention()
+        
         try:
             from src.data.extract import clean_bpy, load, process_mesh, get_arranged_bones, process_armature, save_raw_data
             from src.inference.merge import transfer, clean_bpy as merge_clean_bpy
@@ -355,6 +363,40 @@ class UniRig(
             clean_bpy()
         except ImportError as e:
             print(f"Warning: Could not import some modules: {e}")
+    
+    def _check_flash_attention(self) -> None:
+        """Check if flash attention is available and configure accordingly."""
+        try:
+            import flash_attn
+            print(f"Flash attention available: version {flash_attn.__version__}")
+            self.flash_attn_available = True
+        except ImportError as e:
+            print(f"Warning: Flash attention not available: {e}")
+            print("Attempting to modify model config to use sdpa attention instead...")
+            self.flash_attn_available = False
+            self._patch_model_config_for_sdpa()
+    
+    def _patch_model_config_for_sdpa(self) -> None:
+        """Patch model config to use SDPA instead of flash attention if flash_attn is unavailable."""
+        import yaml
+        
+        model_config_path = Path(self.repo_dir) / "configs/model/unirig_ar_350m_1024_81920_float32.yaml"
+        
+        if model_config_path.exists():
+            try:
+                with open(model_config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+                
+                # Change flash_attention_2 to sdpa (Scaled Dot Product Attention)
+                if config.get('llm', {}).get('_attn_implementation') == 'flash_attention_2':
+                    config['llm']['_attn_implementation'] = 'sdpa'
+                    
+                    with open(model_config_path, 'w') as f:
+                        yaml.dump(config, f, default_flow_style=False)
+                    
+                    print("Model config patched to use SDPA attention")
+            except Exception as e:
+                print(f"Warning: Could not patch model config: {e}")
 
     def _download_input_file(self, url: str, work_dir: Path) -> Path:
         """Download input file from URL."""
@@ -461,6 +503,10 @@ class UniRig(
         
         env = os.environ.copy()
         env["PYTHONPATH"] = self.repo_dir + ":" + env.get("PYTHONPATH", "")
+        # Ensure flash attention can find CUDA
+        env["CUDA_HOME"] = env.get("CUDA_HOME", "/usr/local/cuda")
+        
+        print(f"Running skeleton prediction: {' '.join(cmd)}")
         
         result = subprocess.run(
             cmd,
@@ -472,8 +518,15 @@ class UniRig(
         )
         
         if result.returncode != 0:
+            # Capture full error for debugging
+            full_error = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+            print(f"Skeleton prediction error:\n{full_error}")
+            
+            # Extract the most relevant error message
             error_msg = result.stderr or result.stdout or "Unknown error"
-            raise RuntimeError(f"Skeleton prediction failed: {error_msg[:500]}")
+            # Get last 1000 chars which usually contain the actual error
+            error_msg = error_msg[-1000:] if len(error_msg) > 1000 else error_msg
+            raise RuntimeError(f"Skeleton prediction failed: {error_msg}")
         
         # Look for output file in various locations
         if output_file.exists():
@@ -481,6 +534,12 @@ class UniRig(
         
         # Check npz_dir for skeleton output
         possible_outputs = list(npz_dir.rglob("*skeleton*.fbx"))
+        if possible_outputs:
+            return possible_outputs[0]
+        
+        # Also check the output directory
+        output_dir = output_file.parent
+        possible_outputs = list(output_dir.rglob("*.fbx"))
         if possible_outputs:
             return possible_outputs[0]
         
@@ -506,6 +565,9 @@ class UniRig(
         
         env = os.environ.copy()
         env["PYTHONPATH"] = self.repo_dir + ":" + env.get("PYTHONPATH", "")
+        env["CUDA_HOME"] = env.get("CUDA_HOME", "/usr/local/cuda")
+        
+        print(f"Running skin prediction: {' '.join(cmd)}")
         
         result = subprocess.run(
             cmd,
@@ -517,8 +579,13 @@ class UniRig(
         )
         
         if result.returncode != 0:
+            # Capture full error for debugging
+            full_error = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+            print(f"Skin prediction error:\n{full_error}")
+            
             error_msg = result.stderr or result.stdout or "Unknown error"
-            raise RuntimeError(f"Skin prediction failed: {error_msg[:500]}")
+            error_msg = error_msg[-1000:] if len(error_msg) > 1000 else error_msg
+            raise RuntimeError(f"Skin prediction failed: {error_msg}")
         
         if output_file.exists():
             return output_file
@@ -528,6 +595,12 @@ class UniRig(
             list(npz_dir.rglob("*result_fbx*.fbx")) + 
             list(npz_dir.rglob("*skin*.fbx"))
         )
+        if possible_outputs:
+            return possible_outputs[0]
+        
+        # Also check output directory
+        output_dir = output_file.parent
+        possible_outputs = list(output_dir.rglob("*.fbx"))
         if possible_outputs:
             return possible_outputs[0]
         
