@@ -637,13 +637,24 @@ class UniRig(
         # Apply transforms
         transform_asset(asset=asset, transform_config=self.skin_transform_config)
         
+        # Convert parents to tensor (handling None values)
+        parents_list = []
+        for p in raw_data.parents:
+            parents_list.append(p if p is not None else -1)
+        parents_tensor = torch.tensor(parents_list, dtype=torch.long).unsqueeze(0).to(self.device)
+        
+        # Get number of sampled vertices for offset calculation
+        num_vertices = asset.sampled_vertices.shape[0]
+        
         # Prepare batch
         batch = {
             'vertices': torch.from_numpy(asset.sampled_vertices).float().unsqueeze(0).to(self.device),
             'normals': torch.from_numpy(asset.sampled_normals).float().unsqueeze(0).to(self.device),
             'joints': torch.from_numpy(raw_data.joints).float().unsqueeze(0).to(self.device),
             'tails': torch.from_numpy(raw_data.tails).float().unsqueeze(0).to(self.device),
+            'parents': parents_tensor,
             'num_bones': torch.tensor([len(raw_data.joints)]).to(self.device),
+            'offset': [num_vertices],  # Offset for PTv3 mesh encoder
             'path': ['inference'],
             'cls': [raw_data.cls if hasattr(raw_data, 'cls') and raw_data.cls else 'unknown'],
         }
