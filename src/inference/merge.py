@@ -90,8 +90,8 @@ def load(filepath: str, return_armature: bool=False):
                     bpy.context.collection.objects.link(obj)
         else:
             raise ValueError(f"not suported type {filepath}")
-    except:
-        raise ValueError(f"failed to load {filepath}")
+    except Exception as e:
+        raise ValueError(f"failed to load {filepath}") from e
     if return_armature:
         armature = [x for x in set(bpy.context.scene.objects)-old_objs if x.type=="ARMATURE"]
         if len(armature)==0:
@@ -275,9 +275,13 @@ def make_armature(
     for o in bpy.context.selected_objects:
         o.select_set(False)
     
+    num_bones = skin.shape[1]
+    # Limit group_per_vertex to the actual number of bones available
+    actual_groups = min(group_per_vertex, num_bones)
+    
     argsorted = np.argsort(-skin, axis=1)
     vertex_group_reweight = skin[np.arange(skin.shape[0])[..., None], argsorted]
-    vertex_group_reweight = vertex_group_reweight / vertex_group_reweight[..., :group_per_vertex].sum(axis=1)[...,None]
+    vertex_group_reweight = vertex_group_reweight / vertex_group_reweight[..., :actual_groups].sum(axis=1)[...,None]
     vertex_group_reweight = np.nan_to_num(vertex_group_reweight)
     tree = cKDTree(vertices)
     for ob in objects:
@@ -301,7 +305,7 @@ def make_armature(
         _, index = tree.query(n_vertices)
 
         for v, co in enumerate(tqdm(n_vertices)):
-            for ii in range(group_per_vertex):
+            for ii in range(actual_groups):
                 i = argsorted[index[v], ii]
                 if i >= len(names):
                     continue
@@ -354,11 +358,7 @@ def merge(
     Merge skin and bone into original file.
     '''
     clean_bpy()
-    try:
-        load(path)
-    except Exception as e:
-        print(f"Failed to load {path}: {e}")
-        return
+    load(path)  # Let exceptions propagate naturally
     for c in bpy.data.armatures:
         bpy.data.armatures.remove(c)
     
@@ -392,8 +392,8 @@ def merge(
                 data_to.objects = data_from.objects
         else:
             raise ValueError(f"not suported type {output_path}")
-    except:
-        raise ValueError(f"failed to export {output_path}")
+    except Exception as e:
+        raise ValueError(f"failed to export {output_path}") from e
 
 def str2bool(v):
     if isinstance(v, bool):
