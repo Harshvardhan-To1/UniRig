@@ -90,8 +90,8 @@ def load(filepath: str, return_armature: bool=False):
                     bpy.context.collection.objects.link(obj)
         else:
             raise ValueError(f"not suported type {filepath}")
-    except:
-        raise ValueError(f"failed to load {filepath}")
+    except Exception as e:
+        raise ValueError(f"failed to load {filepath}") from e
     if return_armature:
         armature = [x for x in set(bpy.context.scene.objects)-old_objs if x.type=="ARMATURE"]
         if len(armature)==0:
@@ -354,11 +354,7 @@ def merge(
     Merge skin and bone into original file.
     '''
     clean_bpy()
-    try:
-        load(path)
-    except Exception as e:
-        print(f"Failed to load {path}: {e}")
-        return
+    load(path)  # Let exceptions propagate naturally
     for c in bpy.data.armatures:
         bpy.data.armatures.remove(c)
     
@@ -392,8 +388,8 @@ def merge(
                 data_to.objects = data_from.objects
         else:
             raise ValueError(f"not suported type {output_path}")
-    except:
-        raise ValueError(f"failed to export {output_path}")
+    except Exception as e:
+        raise ValueError(f"failed to export {output_path}") from e
 
 def str2bool(v):
     if isinstance(v, bool):
