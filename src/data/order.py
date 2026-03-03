@@ -71,7 +71,8 @@ class Order():
                 continue
             if cls in self.parts and part in self.parts[cls]:
                 names.extend(self.parts[cls][part])
-        assert len(names) <= num_bones, "number of bones in required skeleton is more than existing bones"
+        if len(names) > num_bones:
+            names = names[:num_bones]
         for i in range(len(names), num_bones):
             names.append(f"bone_{i}")
         return names
