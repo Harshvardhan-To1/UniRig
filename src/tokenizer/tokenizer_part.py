@@ -282,6 +282,30 @@ class TokenizerPart(TokenizerSpec):
                 raise ValueError(f"unexpected token found: {ids[i]}")
         joints = np.stack(joints)
         p_joints = np.stack(p_joints)
+
+        # Detect and repair linear chain topology.
+        # When the model fails to emit branch tokens, every bone's p_joint
+        # defaults to the previous bone, producing a single chain. Rebuild
+        # p_joints using spatial joint proximity to recover branching.
+        if len(joints) > 2:
+            is_chain = True
+            for k in range(2, len(joints)):
+                if np.sum((p_joints[k] - joints[k - 1]) ** 2) > 1e-6:
+                    is_chain = False
+                    break
+            if is_chain:
+                new_p_joints = [p_joints[0].copy()]
+                for k in range(1, len(joints)):
+                    min_dist = float('inf')
+                    best_idx = 0
+                    for j in range(k):
+                        dist = float(np.sum((joints[k] - joints[j]) ** 2))
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_idx = j
+                    new_p_joints.append(joints[best_idx].copy())
+                p_joints = np.stack(new_p_joints)
+
         # leaf is ignored in this tokenizer so need to extrude tails for leaf and branch
         bones, tails, available_bones_id, parents = make_skeleton(
             joints=joints,

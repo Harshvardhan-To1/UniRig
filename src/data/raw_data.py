@@ -219,21 +219,25 @@ class RawSkeleton(Exporter):
         J = len(res.bones)
         names = order.make_names(cls=res.cls, parts=res.parts, num_bones=J)
         joints = res.joints
-        p_joints = res.p_joints
-        parents = []
-        for (i, joint) in enumerate(joints):
-            if i == 0:
-                parents.append(None)
-                continue
-            p_joint = p_joints[i]
-            dis = 999999
-            pid = None
-            for j in reversed(range(i)):
-                n_dis = ((joints[j] - p_joint)**2).sum()
-                if n_dis < dis:
-                    pid = j
-                    dis = n_dis
-            parents.append(pid)
+
+        if res.parents is not None and len(res.parents) == J:
+            parents = res.parents
+        else:
+            p_joints = res.p_joints
+            parents = []
+            for (i, joint) in enumerate(joints):
+                if i == 0:
+                    parents.append(None)
+                    continue
+                p_joint = p_joints[i]
+                dis = 999999
+                pid = None
+                for j in reversed(range(i)):
+                    n_dis = ((joints[j] - p_joint)**2).sum()
+                    if n_dis < dis:
+                        pid = j
+                        dis = n_dis
+                parents.append(pid)
         return RawSkeleton(
             joints=joints,
             tails=res.tails,

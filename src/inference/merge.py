@@ -79,7 +79,7 @@ def load(filepath: str, return_armature: bool=False):
         elif filepath.endswith(".fbx") or filepath.endswith(".FBX"):
             bpy.ops.import_scene.fbx(filepath=filepath, ignore_leaf_bones=False, use_image_search=False)
         elif filepath.endswith(".glb") or filepath.endswith(".gltf"):
-            bpy.ops.import_scene.gltf(filepath=filepath, import_pack_images=False)
+            bpy.ops.import_scene.gltf(filepath=filepath, import_pack_images=True)
         elif filepath.endswith(".dae"):
             bpy.ops.wm.collada_import(filepath=filepath)
         elif filepath.endswith(".blend"):
@@ -259,6 +259,15 @@ def make_armature(
         bone.use_connect = False # always False currently
 
     vertices, bones = get_correct_orientation_kdtree(vertices, mesh_vertices, bones)
+
+    # Clamp bones to stay within a reasonable margin of the mesh bounding box
+    mesh_min = mesh_vertices.min(axis=0)
+    mesh_max = mesh_vertices.max(axis=0)
+    mesh_extent = mesh_max - mesh_min
+    margin = mesh_extent * 0.15
+    bones[:, :3] = np.clip(bones[:, :3], mesh_min - margin, mesh_max + margin)
+    bones[:, 3:] = np.clip(bones[:, 3:], mesh_min - margin, mesh_max + margin)
+
     inv = np.linalg.inv(local_coord)
     bones[:, :3] = (inv[:3, :3] @ bones[:, :3].T + inv[:3, 3:4]).T
     bones[:, 3:] = (inv[:3, :3] @ bones[:, 3:].T + inv[:3, 3:4]).T
@@ -359,6 +368,15 @@ def merge(
     '''
     clean_bpy()
     load(path)  # Let exceptions propagate naturally
+
+    # Remove existing armatures and their objects, but preserve materials/textures
+    armature_objs = [obj for obj in bpy.data.objects if obj.type == 'ARMATURE']
+    for obj in armature_objs:
+        # Unparent mesh children so they survive armature deletion
+        for child in obj.children:
+            if child.type == 'MESH':
+                child.parent = None
+        bpy.data.objects.remove(obj, do_unlink=True)
     for c in bpy.data.armatures:
         bpy.data.armatures.remove(c)
     
@@ -384,7 +402,16 @@ def merge(
         elif output_path.endswith(".fbx") or output_path.endswith(".FBX"):
             bpy.ops.export_scene.fbx(filepath=output_path, add_leaf_bones=True)
         elif output_path.endswith(".glb") or output_path.endswith(".gltf"):
-            bpy.ops.export_scene.gltf(filepath=output_path)
+            export_format = 'GLB' if output_path.endswith('.glb') else 'GLTF_SEPARATE'
+            bpy.ops.export_scene.gltf(
+                filepath=output_path,
+                export_format=export_format,
+                export_image_format='AUTO',
+                export_materials='EXPORT',
+                export_texcoords=True,
+                export_normals=True,
+                export_colors=True,
+            )
         elif output_path.endswith(".dae"):
             bpy.ops.wm.collada_export(filepath=output_path)
         elif output_path.endswith(".blend"):
